@@ -24,7 +24,7 @@ def main():
         print("错误: uvicorn 未安装，请运行: pip install codyflow", file=sys.stderr)
         sys.exit(1)
 
-    print(f"\n  CodyFlow Web UI")
+    print("\n  CodyFlow Web UI")
     print(f"  http://{args.host}:{args.port}\n")
     uvicorn.run("codyflow.web.api:app", host=args.host, port=args.port, reload=False)
 

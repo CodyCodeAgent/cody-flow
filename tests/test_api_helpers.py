@@ -2,19 +2,16 @@
 
 from __future__ import annotations
 
-import pytest
-
-from codyflow.web.api import (
-    _parse_yaml_flow_data,
-    _model_to_definition,
-    _model_to_yaml_dict,
-    FlowModel,
-    NodeModel,
-    EdgeModel,
-)
 from codyflow.engine.flow import FlowDefinition
 from codyflow.nodes.base import NodeConfig
-
+from codyflow.web.api import (
+    EdgeModel,
+    FlowModel,
+    NodeModel,
+    _model_to_definition,
+    _model_to_yaml_dict,
+    _parse_yaml_flow_data,
+)
 
 # ---------------------------------------------------------------------------
 # _parse_yaml_flow_data

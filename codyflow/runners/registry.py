@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Type
-
 from codyflow.runners.base import Runner
 
-_registry: dict[str, Type[Runner]] = {}
+_registry: dict[str, type[Runner]] = {}
 
 
-def register_runner(name: str, cls: Type[Runner]):
+def register_runner(name: str, cls: type[Runner]):
     """Register a runner class under a given name."""
     _registry[name] = cls
 

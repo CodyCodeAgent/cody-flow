@@ -17,10 +17,10 @@ class CodyRunner(Runner):
         if self._client is None:
             try:
                 from cody import AsyncCodyClient
-            except ImportError:
+            except ImportError as exc:
                 raise ImportError(
                     "Cody SDK not installed. Run: pip install codyflow[cody]"
-                )
+                ) from exc
             client_kwargs = {"workdir": self.workdir}
             if self.config.get("api_key"):
                 client_kwargs["api_key"] = self.config["api_key"]
@@ -45,10 +45,9 @@ class CodyRunner(Runner):
 
     async def close(self):
         if self._client is not None:
-            try:
+            import contextlib
+            with contextlib.suppress(Exception):
                 await self._client.__aexit__(None, None, None)
-            except Exception:
-                pass
             self._client = None
 
 

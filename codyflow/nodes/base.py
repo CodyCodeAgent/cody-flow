@@ -7,7 +7,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, TypedDict
 
-
 # ---------------------------------------------------------------------------
 # LangGraph shared state
 # ---------------------------------------------------------------------------
@@ -118,7 +117,7 @@ class Node(abc.ABC):
 
         # Section 3: Working directory and available context files
         context_dir = state.get("context_dir", "")
-        sections.append(f"\n## 工作目录")
+        sections.append("\n## 工作目录")
         sections.append(f"项目目录: {state['workdir']}")
         sections.append(f"上下文文件目录: {context_dir}")
 
@@ -144,16 +143,16 @@ class Node(abc.ABC):
         iteration = state.get("iteration", 0)
         if iteration > 0:
             max_iter = state.get("max_iterations", 5)
-            sections.append(f"\n## 迭代信息")
+            sections.append("\n## 迭代信息")
             sections.append(f"当前是第 {iteration + 1} 轮迭代（最多 {max_iter} 轮）")
 
         # Section 5: The actual task
-        sections.append(f"\n# 你的任务")
+        sections.append("\n# 你的任务")
         sections.append(self.prompt)
 
         # Section 6: Output file instructions
         if self.config.outputs:
-            sections.append(f"\n# 输出要求")
+            sections.append("\n# 输出要求")
             sections.append(
                 "请将你的工作产出（总结/报告）写入以下文件（在上下文文件目录下）:"
             )

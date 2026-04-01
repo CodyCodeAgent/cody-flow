@@ -1,7 +1,6 @@
 """Tests for ExecutionLogger."""
 
 import json
-from pathlib import Path
 
 import pytest
 
@@ -17,7 +16,7 @@ def logger(tmp_path):
 class TestExecutionLogger:
     def test_creates_logs_dir(self, tmp_path):
         logs_dir = tmp_path / "new_logs"
-        logger = ExecutionLogger(str(logs_dir))
+        ExecutionLogger(str(logs_dir))
         assert logs_dir.exists()
 
     def test_run_id_is_unique(self, tmp_path):
@@ -28,7 +27,7 @@ class TestExecutionLogger:
     def test_log_event_writes_jsonl(self, logger, tmp_path):
         logger.log_event({"event": "test", "data": "hello"})
         content = logger.run_log.read_text()
-        lines = [l for l in content.splitlines() if l.strip()]
+        lines = [line for line in content.splitlines() if line.strip()]
         assert len(lines) == 1
         parsed = json.loads(lines[0])
         assert parsed["event"] == "test"
@@ -102,7 +101,7 @@ class TestExecutionLogger:
     def test_multiple_events_appended(self, logger):
         logger.log_event({"event": "first"})
         logger.log_event({"event": "second"})
-        lines = [l for l in logger.run_log.read_text().splitlines() if l.strip()]
+        lines = [line for line in logger.run_log.read_text().splitlines() if line.strip()]
         assert len(lines) == 2
         assert json.loads(lines[0])["event"] == "first"
         assert json.loads(lines[1])["event"] == "second"

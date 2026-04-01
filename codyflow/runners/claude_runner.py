@@ -18,11 +18,11 @@ class ClaudeRunner(Runner):
 
     async def run(self, prompt: str, session_id: str | None = None) -> RunnerResult:
         try:
-            from claude_agent_sdk import query, ClaudeAgentOptions
-        except ImportError:
+            from claude_agent_sdk import ClaudeAgentOptions, query
+        except ImportError as exc:
             raise ImportError(
                 "Claude Agent SDK not installed. Run: pip install codyflow[claude]"
-            )
+            ) from exc
 
         # Build options
         options_kwargs = {

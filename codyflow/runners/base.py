@@ -40,6 +40,7 @@ class Runner(abc.ABC):
 
     async def close(self):
         """Clean up resources. Override if needed."""
+        return  # default no-op; subclasses may override
 
     async def __aenter__(self):
         return self

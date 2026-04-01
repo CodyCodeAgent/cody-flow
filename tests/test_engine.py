@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import pytest
-
-from codyflow.engine.flow import Flow, FlowDefinition, EdgeDef
+from codyflow.engine.flow import EdgeDef, Flow, FlowDefinition
 from codyflow.nodes.base import NodeConfig
 
 

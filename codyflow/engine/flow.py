@@ -9,16 +9,16 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from langgraph.graph import END, StateGraph
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+from langgraph.graph import END, StateGraph
 
+import codyflow.nodes.builtin  # noqa: F401  — register built-in nodes
+import codyflow.runners.claude_runner  # noqa: F401
+import codyflow.runners.cody_runner  # noqa: F401
+from codyflow.engine.logger import ExecutionLogger
 from codyflow.nodes.base import FlowState, NodeConfig, NodeResult
 from codyflow.nodes.registry import get_node_type
-import codyflow.nodes.builtin  # noqa: F401  — register built-in nodes
 from codyflow.runners.registry import get_runner
-import codyflow.runners.cody_runner  # noqa: F401
-import codyflow.runners.claude_runner  # noqa: F401
-from codyflow.engine.logger import ExecutionLogger
 
 logger = logging.getLogger(__name__)
 
@@ -245,7 +245,7 @@ class Flow:
                 if retries > node_config.max_retries:
                     raise RuntimeError(
                         f"Node {nid} failed after {node_config.max_retries} retries: {last_error}"
-                    )
+                    ) from None
 
         duration = time.time() - start_time
         updates: dict[str, Any] = {"iteration": iteration}

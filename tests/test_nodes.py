@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock
 
-from codyflow.nodes.base import FlowState, Node, NodeConfig, NodeResult
-from codyflow.nodes.builtin import (
-    SimpleNode, DiscussNode, LearnNode, CodeNode,
-    ReflectNode, JudgeNode, CustomNode,
-)
+import pytest
 
+from codyflow.nodes.base import FlowState, NodeConfig
+from codyflow.nodes.builtin import (
+    CodeNode,
+    CustomNode,
+    DiscussNode,
+    JudgeNode,
+    LearnNode,
+    ReflectNode,
+)
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -171,13 +175,13 @@ class TestSimpleNode:
 class TestDiscussNode:
     def test_defaults_to_interactive(self):
         cfg = _make_config(type="discuss")
-        node = DiscussNode(cfg)
+        DiscussNode(cfg)
         assert cfg.interactive is True
 
     def test_explicit_non_interactive(self):
         cfg = _make_config(type="discuss", extra={"_interactive_explicit": True})
         cfg.interactive = False
-        node = DiscussNode(cfg)
+        DiscussNode(cfg)
         assert cfg.interactive is False
 
     def test_has_default_prompt(self):

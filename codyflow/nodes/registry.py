@@ -2,19 +2,17 @@
 
 from __future__ import annotations
 
-from typing import Type
-
 from codyflow.nodes.base import Node
 
-_registry: dict[str, Type[Node]] = {}
+_registry: dict[str, type[Node]] = {}
 
 
-def register_node_type(name: str, cls: Type[Node]):
+def register_node_type(name: str, cls: type[Node]):
     """Register a node type class."""
     _registry[name] = cls
 
 
-def get_node_type(name: str) -> Type[Node]:
+def get_node_type(name: str) -> type[Node]:
     """Get a node type class by name.
 
     Raises:

@@ -1,6 +1,5 @@
 """Tests for JudgeNode route parsing logic."""
 
-import pytest
 
 from codyflow.nodes.base import NodeConfig
 from codyflow.nodes.builtin import JudgeNode

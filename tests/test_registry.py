@@ -2,11 +2,10 @@
 
 import pytest
 
+from codyflow.nodes.base import Node, NodeResult
 from codyflow.nodes.registry import get_node_type, list_node_types, register_node_type
-from codyflow.nodes.base import Node, NodeConfig, NodeResult, FlowState
-from codyflow.runners.registry import get_runner, list_runners, register_runner
 from codyflow.runners.base import Runner, RunnerResult
-
+from codyflow.runners.registry import get_runner, list_runners, register_runner
 
 # ---------------------------------------------------------------------------
 # Node registry

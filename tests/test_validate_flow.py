@@ -1,8 +1,7 @@
 """Tests for flow validation logic."""
 
-import pytest
 
-from codyflow.engine.flow import FlowDefinition, EdgeDef, validate_flow
+from codyflow.engine.flow import EdgeDef, FlowDefinition, validate_flow
 from codyflow.nodes.base import NodeConfig
 
 

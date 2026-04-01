@@ -18,7 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.responses import StreamingResponse
 
-from codyflow.engine.flow import Flow, FlowDefinition, validate_flow, EdgeDef
+from codyflow.engine.flow import EdgeDef, Flow, FlowDefinition, validate_flow
 from codyflow.nodes.base import NodeConfig
 from codyflow.nodes.registry import list_node_types
 from codyflow.runners.registry import list_runners
@@ -219,7 +219,7 @@ async def api_get_template(filename: str):
     try:
         data = yaml.safe_load(file_path.read_text(encoding="utf-8"))
     except yaml.YAMLError as e:
-        raise HTTPException(500, f"Template parse error: {e}")
+        raise HTTPException(500, f"Template parse error: {e}") from None
 
     return _parse_yaml_flow_data(data)
 
@@ -249,7 +249,7 @@ async def api_import_yaml(req: ImportYamlRequest):
     try:
         data = yaml.safe_load(req.yaml_content)
     except yaml.YAMLError as e:
-        raise HTTPException(400, f"YAML 解析错误: {e}")
+        raise HTTPException(400, f"YAML 解析错误: {e}") from None
 
     if not isinstance(data, dict):
         raise HTTPException(400, "无效的 YAML 格式")
@@ -348,7 +348,7 @@ async def api_flow_events_sse():
                 if event.get("type") == "flow_complete":
                     break
             except asyncio.TimeoutError:
-                yield f": keepalive\n\n"
+                yield ": keepalive\n\n"
             except Exception:
                 break
 
@@ -408,11 +408,10 @@ async def ws_flow(ws: WebSocket):
                     data = await ws.receive_json()
                     if data.get("type") == "interactive_input" and _interactive_input_queue:
                         _interactive_input_queue.put_nowait(data.get("message", ""))
-                    elif data.get("type") == "stop":
-                        if _flow_task and not _flow_task.done():
-                            _flow_task.cancel()
-                            if _event_queue:
-                                _event_queue.put_nowait({"type": "flow_stopped", "timestamp": time.time()})
+                    elif data.get("type") == "stop" and _flow_task and not _flow_task.done():
+                        _flow_task.cancel()
+                        if _event_queue:
+                            _event_queue.put_nowait({"type": "flow_stopped", "timestamp": time.time()})
                 except (WebSocketDisconnect, Exception):
                     break
 
@@ -492,13 +491,12 @@ async def api_read_log(filename: str, workdir: str = Query(".")):
     if not file_path.exists():
         raise HTTPException(404, f"File not found: {filename}")
 
+    import contextlib
     events = []
     for line in file_path.read_text(encoding="utf-8").splitlines():
         if line.strip():
-            try:
+            with contextlib.suppress(json.JSONDecodeError):
                 events.append(json.loads(line))
-            except json.JSONDecodeError:
-                pass
     return {"events": events}
 
 
