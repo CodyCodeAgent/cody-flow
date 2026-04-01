@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CodyFlow - AI 工作流编排</title>
+<link rel="stylesheet" href="/static/css/main.css">
+</head>
+<body>
+<div id="app">
+  <app-header
+    :current-page="currentPage"
+    :run-status="store.runStatus"
+    :current-flow-id="store.currentFlowId"
+    :flow-name="store.flow.name"
+    @navigate="currentPage = $event"
+    @new-flow="newFlow"
+    @open-flows="openFlows"
+    @save="saveFlow"
+    @run="showRunFlowDialog"
+    @stop="stopFlow"
+    @export-yaml="exportYAML"
+    @import-yaml="showImportYamlDialog"
+    @load-template="loadTemplate"
+  ></app-header>
+
+  <!-- Editor Page -->
+  <div class="editor-layout" v-show="currentPage === 'editor'">
+    <node-palette
+      @add-node="addNodeAtCenter"
+      @load-context-file="loadContextFile"
+    ></node-palette>
+    <flow-canvas
+      ref="canvas"
+      :nodes="store.flow.nodes"
+      :edges="store.flow.edges"
+      :selected-node="store.selectedNode"
+      :run-status="store.runStatus"
+      :running-nodes="store.runningNodes"
+      :completed-nodes="store.completedNodes"
+      :scale="store.canvasScale"
+      :offset-x="store.canvasOffsetX"
+      :offset-y="store.canvasOffsetY"
+      @select-node="store.selectedNode = $event"
+      @update-node-pos="updateNodePos"
+      @add-edge="addEdge"
+      @remove-edge="removeEdge"
+      @edit-edge="editEdge"
+      @drop-node="handleDropNode"
+      @update-transform="updateTransform"
+    ></flow-canvas>
+    <props-panel
+      :node="selectedNodeData"
+      :edges="store.flow.edges"
+      @update="updateNodeProp"
+      @rename="renameNode"
+      @remove="removeNode"
+    ></props-panel>
+  </div>
+
+  <!-- Settings Page -->
+  <settings-page
+    v-show="currentPage === 'settings'"
+    :config="store.config"
+    :env-status="store.envStatus"
+    @save-config="saveConfig"
+    @check-env="checkEnvironment"
+  ></settings-page>
+
+  <!-- Flow List Modal -->
+  <div class="modal-overlay" v-if="store.showFlowList" @click.self="store.showFlowList=false">
+    <div class="modal">
+      <h3>打开 Flow</h3>
+      <div v-if="store.savedFlows.length === 0" style="color:var(--text2);padding:20px 0;text-align:center">
+        还没有保存的 Flow
+      </div>
+      <div v-else class="flow-list">
+        <div v-for="f in store.savedFlows" :key="f.id" class="flow-list-item" @click="loadFlow(f.id)">
+          <div class="flow-list-name">{{ f.name || '未命名' }}</div>
+          <div class="flow-list-meta">
+            {{ f.description || '无描述' }}
+            <span class="flow-list-info">{{ f.node_count }} 节点 · {{ formatTime(f.updated_at) }}</span>
+          </div>
+          <button class="btn btn-danger btn-sm flow-list-del" @click.stop="deleteFlow(f.id)">删除</button>
+        </div>
+      </div>
+      <div style="display:flex;justify-content:flex-end;margin-top:12px">
+        <button class="btn btn-outline btn-sm" @click="store.showFlowList=false">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Run Dialog Modal -->
+  <div class="modal-overlay" v-if="store.showRunDialog" @click.self="closeRunDialog">
+    <div class="modal">
+      <h3>运行 Flow</h3>
+      <div class="form-group">
+        <label>工作目录</label>
+        <input v-model="store.runWorkdir" placeholder="项目根目录的绝对路径">
+        <span style="font-size:11px;color:var(--text2);margin-top:2px;display:block">
+          AI 将在此目录中读写代码。请输入项目根目录的绝对路径，如 /home/user/my-project
+        </span>
+      </div>
+      <div class="form-group">
+        <label>任务描述 / 需求</label>
+        <textarea rows="4" v-model="store.runUserInput" placeholder="描述你希望 AI 完成的任务...&#10;&#10;例如：实现用户登录功能，包含邮箱验证和 JWT token"></textarea>
+        <span style="font-size:11px;color:var(--text2);margin-top:2px;display:block">
+          此内容会注入到每个节点的 prompt 中，确保所有 AI 节点理解你的需求
+        </span>
+      </div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
+        <button class="btn btn-outline btn-sm" @click="closeRunDialog">取消</button>
+        <button class="btn btn-primary btn-sm" @click="runFlow">开始运行</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Import YAML Modal -->
+  <div class="modal-overlay" v-if="store.showImportDialog" @click.self="store.showImportDialog=false">
+    <div class="modal">
+      <h3>导入 Flow YAML</h3>
+      <div class="form-group">
+        <label>粘贴 YAML 内容</label>
+        <textarea rows="12" v-model="store.importYamlContent" placeholder="name: my-flow&#10;nodes:&#10;  - id: code&#10;    type: code&#10;..." style="font-family:monospace;font-size:11px"></textarea>
+      </div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">
+        <button class="btn btn-outline btn-sm" @click="store.showImportDialog=false">取消</button>
+        <button class="btn btn-primary btn-sm" @click="doImportYaml">导入</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Template Selection Modal -->
+  <div class="modal-overlay" v-if="store.showTemplateDialog" @click.self="store.showTemplateDialog=false">
+    <div class="modal">
+      <h3>选择模板</h3>
+      <p v-if="store.templates.length === 0" style="color:var(--text2);padding:16px 0;text-align:center">
+        没有可用的模板
+      </p>
+      <div v-else class="flow-list">
+        <div v-for="t in store.templates" :key="t.filename" class="flow-list-item" @click="doLoadTemplate(t.filename)">
+          <div class="flow-list-name">{{ t.name }}</div>
+          <div class="flow-list-meta">
+            {{ t.description || '无描述' }}
+            <span class="flow-list-info">{{ t.node_count }} 个节点</span>
+          </div>
+        </div>
+      </div>
+      <div style="display:flex;justify-content:flex-end;margin-top:12px">
+        <button class="btn btn-outline btn-sm" @click="store.showTemplateDialog=false">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Interactive Chat Modal -->
+  <div class="modal-overlay interactive-overlay" v-if="store.interactiveWaiting" @click.self="">
+    <div class="modal interactive-modal">
+      <h3>💬 交互式对话 — {{ store.interactiveNodeId }}</h3>
+      <div class="interactive-output">
+        <pre>{{ store.interactiveOutput }}</pre>
+      </div>
+      <div class="form-group">
+        <textarea rows="3" v-model="store.interactiveInput" placeholder="输入你的回复..." @keydown.ctrl.enter="sendInteractiveMessage" @keydown.meta.enter="sendInteractiveMessage"></textarea>
+      </div>
+      <div style="display:flex;gap:8px;justify-content:flex-end">
+        <button class="btn btn-outline btn-sm" @click="sendInteractiveMessage('done')">结束对话</button>
+        <button class="btn btn-primary btn-sm" @click="sendInteractiveMessage()">发送 (Ctrl+Enter)</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- YAML Export Modal -->
+  <div class="modal-overlay" v-if="showYamlModal" @click.self="showYamlModal=false">
+    <div class="modal">
+      <h3>导出 YAML</h3>
+      <p style="font-size:12px;color:var(--text2);margin-bottom:8px">复制此 YAML 分享给其他人，他们可以通过"导入"功能加载。</p>
+      <pre>{{ yamlContent }}</pre>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">
+        <button class="btn btn-outline btn-sm" @click="copyYaml">复制</button>
+        <button class="btn btn-outline btn-sm" @click="showYamlModal=false">关闭</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+<script src="/static/js/store.js"></script>
+<script src="/static/js/api.js"></script>
+<script src="/static/components/header.js"></script>
+<script src="/static/components/node-palette.js"></script>
+<script src="/static/components/flow-canvas.js"></script>
+<script src="/static/components/props-panel.js"></script>
+<script src="/static/components/settings.js"></script>
+<script src="/static/js/app.js"></script>
+</body>
+</html>

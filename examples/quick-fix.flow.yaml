@@ -1,0 +1,33 @@
+name: "quick-fix"
+description: "{task_description}"
+runner: cody
+max_iterations: 2
+
+nodes:
+  - id: code
+    type: code
+    prompt: "根据用户需求直接修改代码。快速修复，不需要过多讨论。"
+    outputs:
+      - code_output.md
+
+  - id: reflect
+    type: reflect
+    outputs:
+      - reflect_output.md
+
+  - id: judge
+    type: judge
+    outputs:
+      - judge_output.md
+
+edges:
+  - from: code
+    to: reflect
+  - from: reflect
+    to: judge
+  - from: judge
+    to: code
+    condition: needs_fix
+  - from: judge
+    to: END
+    condition: passed

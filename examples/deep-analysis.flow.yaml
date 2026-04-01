@@ -1,0 +1,83 @@
+name: "deep-analysis"
+description: "{task_description}"
+runner: claude
+max_iterations: 5
+
+nodes:
+  - id: discuss
+    type: discuss
+    interactive: true
+    outputs:
+      - discuss_output.md
+
+  - id: learn
+    type: learn
+    prompt: |
+      深入学习项目的架构和代码风格。重点关注：
+      1. 项目的整体架构设计模式
+      2. 核心模块之间的依赖关系
+      3. 测试策略和覆盖率
+      4. CI/CD 流程
+      5. 编码规范和风格指南
+    outputs:
+      - learn_output.md
+
+  - id: plan
+    type: custom
+    prompt: |
+      你是方案设计节点。根据讨论结论和项目学习成果，制定详细的实现方案。
+      方案应包含：
+      1. 需要修改/新增的文件列表
+      2. 每个文件的变更概要
+      3. 实现顺序和依赖关系
+      4. 可能的风险点和应对策略
+      5. 测试计划
+    outputs:
+      - plan_output.md
+
+  - id: code
+    type: code
+    outputs:
+      - code_output.md
+
+  - id: test
+    type: custom
+    prompt: |
+      你是测试节点。请运行项目的测试套件，检查代码变更是否引入了回归问题。
+      执行步骤：
+      1. 运行现有测试 (pytest / npm test 等)
+      2. 如需要，为新功能编写测试用例
+      3. 检查测试覆盖率
+      4. 记录测试结果
+    outputs:
+      - test_output.md
+
+  - id: reflect
+    type: reflect
+    outputs:
+      - reflect_output.md
+
+  - id: judge
+    type: judge
+    outputs:
+      - judge_output.md
+
+edges:
+  - from: discuss
+    to: learn
+  - from: learn
+    to: plan
+  - from: plan
+    to: code
+  - from: code
+    to: test
+  - from: test
+    to: reflect
+  - from: reflect
+    to: judge
+  - from: judge
+    to: code
+    condition: needs_fix
+  - from: judge
+    to: END
+    condition: passed
