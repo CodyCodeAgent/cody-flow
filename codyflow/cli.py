@@ -194,5 +194,27 @@ def resume(flow_file: str, workdir: str, user_input: str):
     asyncio.run(flow.run(user_input))
 
 
+@main.command()
+@click.option("--host", "-h", default="127.0.0.1", help="服务器地址")
+@click.option("--port", "-p", default=8080, type=int, help="服务器端口")
+def web(host: str, port: int):
+    """启动 Web UI"""
+    try:
+        import uvicorn
+    except ImportError:
+        console.print(
+            "[red]✗ uvicorn 未安装[/red]\n"
+            "  运行: [bold]pip install uvicorn[/bold]"
+        )
+        raise SystemExit(1)
+
+    console.print(Panel(
+        f"[bold]CodyFlow Web UI[/bold]\n"
+        f"访问: [cyan]http://{host}:{port}[/cyan]",
+        style="blue",
+    ))
+    uvicorn.run("codyflow.web.api:app", host=host, port=port, reload=False)
+
+
 if __name__ == "__main__":
     main()

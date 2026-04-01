@@ -1,0 +1,230 @@
+/* ============================================================
+   CodyFlow — Global Styles
+   ============================================================ */
+*{margin:0;padding:0;box-sizing:border-box}
+
+:root{
+  --bg:#0a0a0f;
+  --surface:#12121a;
+  --surface2:#1a1a2e;
+  --border:#2a2a3e;
+  --text:#e0e0f0;
+  --text2:#8888aa;
+  --accent:#6366f1;
+  --accent2:#818cf8;
+  --green:#22c55e;
+  --yellow:#eab308;
+  --red:#ef4444;
+  --cyan:#06b6d4;
+  --node-discuss:#8b5cf6;
+  --node-learn:#06b6d4;
+  --node-code:#6366f1;
+  --node-reflect:#f59e0b;
+  --node-judge:#ef4444;
+  --node-custom:#64748b;
+}
+
+body{
+  font-family:'Inter',system-ui,-apple-system,sans-serif;
+  background:var(--bg);color:var(--text);
+  overflow:hidden;height:100vh;
+}
+
+/* ---- Layout ---- */
+.editor-layout{
+  display:grid;
+  grid-template-columns:260px 1fr 300px;
+  height:calc(100vh - 56px);
+}
+
+/* ---- Header ---- */
+.header{
+  height:56px;background:var(--surface);
+  border-bottom:1px solid var(--border);
+  display:flex;align-items:center;justify-content:space-between;
+  padding:0 20px;z-index:10;
+}
+.header .logo{
+  font-size:18px;font-weight:700;
+  background:linear-gradient(135deg,var(--accent),var(--cyan));
+  -webkit-background-clip:text;-webkit-text-fill-color:transparent;
+}
+.header .subtitle{font-size:12px;color:var(--text2);margin-left:8px}
+.header-nav{display:flex;gap:4px;margin-left:24px}
+.header-nav button{
+  padding:6px 14px;border-radius:6px;border:none;
+  background:transparent;color:var(--text2);font-size:13px;
+  cursor:pointer;transition:all .2s;font-family:inherit;
+}
+.header-nav button:hover{color:var(--text);background:var(--surface2)}
+.header-nav button.active{color:var(--accent);background:var(--accent)11}
+.header-actions{display:flex;gap:8px}
+
+/* ---- Buttons ---- */
+.btn{
+  padding:8px 16px;border-radius:6px;border:none;
+  font-size:13px;font-weight:500;cursor:pointer;
+  transition:all .2s;font-family:inherit;
+}
+.btn-primary{background:var(--accent);color:white}
+.btn-primary:hover{background:var(--accent2)}
+.btn-outline{background:transparent;border:1px solid var(--border);color:var(--text)}
+.btn-outline:hover{border-color:var(--accent);color:var(--accent)}
+.btn-danger{background:transparent;border:1px solid var(--red);color:var(--red)}
+.btn-danger:hover{background:var(--red);color:white}
+.btn-sm{padding:5px 10px;font-size:11px}
+.btn-success{background:var(--green);color:white}
+
+/* ---- Sidebar ---- */
+.sidebar{
+  background:var(--surface);border-right:1px solid var(--border);
+  padding:16px;overflow-y:auto;
+}
+.sidebar h3{
+  font-size:11px;text-transform:uppercase;color:var(--text2);
+  margin-bottom:10px;letter-spacing:1px;
+}
+
+/* ---- Palette ---- */
+.node-palette{display:flex;flex-direction:column;gap:6px;margin-bottom:20px}
+.palette-item{
+  padding:8px 10px;border-radius:8px;
+  background:var(--surface2);border:1px solid var(--border);
+  cursor:grab;transition:all .2s;
+  display:flex;align-items:center;gap:10px;font-size:13px;
+}
+.palette-item:hover{border-color:var(--accent);transform:translateX(4px)}
+.palette-item .dot{width:10px;height:10px;border-radius:50%;flex-shrink:0}
+.palette-item .label{font-weight:500;font-size:12px}
+.palette-item .desc{font-size:10px;color:var(--text2);margin-top:1px}
+
+/* ---- Canvas ---- */
+.canvas-wrap{position:relative;overflow:hidden;background:var(--bg)}
+.canvas{width:100%;height:100%;position:relative}
+.canvas svg{position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none}
+.canvas svg path{pointer-events:stroke}
+.grid-bg{
+  position:absolute;inset:0;
+  background-image:radial-gradient(circle,var(--border) 1px,transparent 1px);
+  background-size:24px 24px;opacity:.3;
+}
+.empty-state{
+  position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
+  text-align:center;color:var(--text2);
+}
+.empty-state .icon{font-size:48px;margin-bottom:12px;opacity:.3}
+.status-bar{
+  position:absolute;bottom:0;left:0;right:0;height:28px;
+  background:var(--surface);border-top:1px solid var(--border);
+  display:flex;align-items:center;padding:0 12px;
+  font-size:11px;color:var(--text2);gap:12px;z-index:5;
+}
+.status-dot{width:8px;height:8px;border-radius:50%;background:var(--green)}
+.status-dot.idle{background:var(--text2)}
+.status-dot.running{background:var(--yellow);animation:pulse 1s infinite}
+.status-dot.error{background:var(--red)}
+
+/* ---- Flow Nodes ---- */
+.flow-node{
+  position:absolute;min-width:150px;
+  background:var(--surface);border:2px solid var(--border);
+  border-radius:10px;cursor:move;user-select:none;
+  transition:box-shadow .15s;
+}
+.flow-node:hover{box-shadow:0 0 16px rgba(99,102,241,.15)}
+.flow-node.active{border-color:var(--accent);box-shadow:0 0 20px rgba(99,102,241,.25)}
+.flow-node.running{border-color:var(--yellow);animation:pulse 1.5s infinite}
+.flow-node.completed{border-color:var(--green)}
+.flow-node-header{
+  padding:7px 10px;border-radius:8px 8px 0 0;
+  font-size:11px;font-weight:600;display:flex;align-items:center;gap:6px;
+}
+.flow-node-body{padding:6px 10px 8px;font-size:11px;color:var(--text2)}
+.flow-node .node-id{font-family:monospace;color:var(--text);font-size:11px}
+.flow-node .port{
+  position:absolute;width:12px;height:12px;border-radius:50%;
+  background:var(--border);border:2px solid var(--surface);
+  cursor:crosshair;z-index:5;transition:all .15s;
+}
+.flow-node .port:hover{background:var(--accent);transform:scale(1.3)}
+.flow-node .port-out{bottom:-6px;left:50%;margin-left:-6px}
+.flow-node .port-in{top:-6px;left:50%;margin-left:-6px}
+
+/* ---- Right Panel ---- */
+.panel{
+  background:var(--surface);border-left:1px solid var(--border);
+  padding:16px;overflow-y:auto;
+}
+.panel h3{
+  font-size:11px;text-transform:uppercase;color:var(--text2);
+  margin-bottom:10px;letter-spacing:1px;
+}
+.form-group{margin-bottom:12px}
+.form-group label{
+  display:block;font-size:10px;color:var(--text2);
+  margin-bottom:3px;text-transform:uppercase;letter-spacing:.5px;
+}
+.form-group input,.form-group select,.form-group textarea{
+  width:100%;padding:7px 9px;background:var(--surface2);
+  border:1px solid var(--border);border-radius:6px;
+  color:var(--text);font-size:12px;outline:none;font-family:inherit;
+}
+.form-group input:focus,.form-group select:focus,.form-group textarea:focus{border-color:var(--accent)}
+.form-group textarea{min-height:70px;resize:vertical}
+.toggle{display:flex;align-items:center;gap:8px;font-size:12px}
+.toggle input[type=checkbox]{width:14px;height:14px;accent-color:var(--accent)}
+
+/* ---- Settings Page ---- */
+.settings-page{
+  height:calc(100vh - 56px);overflow-y:auto;
+  padding:32px;max-width:800px;margin:0 auto;
+}
+.settings-page h2{font-size:20px;margin-bottom:20px}
+.settings-section{
+  background:var(--surface);border:1px solid var(--border);
+  border-radius:10px;padding:20px;margin-bottom:20px;
+}
+.settings-section h3{
+  font-size:14px;font-weight:600;margin-bottom:16px;
+  padding-bottom:10px;border-bottom:1px solid var(--border);
+}
+.env-check{display:flex;flex-direction:column;gap:10px;margin-top:12px}
+.env-item{
+  display:flex;align-items:center;gap:10px;
+  padding:10px 12px;background:var(--surface2);border-radius:8px;
+}
+.env-item .status-icon{font-size:16px}
+.env-item .env-name{font-weight:500;font-size:13px;min-width:140px}
+.env-item .env-detail{font-size:12px;color:var(--text2)}
+
+/* ---- Events Log ---- */
+.events-log{
+  max-height:180px;overflow-y:auto;
+  font-size:11px;font-family:monospace;
+  background:var(--surface2);border-radius:6px;padding:8px;margin-top:6px;
+}
+.events-log .event{padding:2px 0;border-bottom:1px solid var(--border);color:var(--text2)}
+.events-log .event.start{color:var(--yellow)}
+.events-log .event.complete{color:var(--green)}
+.events-log .event.error{color:var(--red)}
+
+/* ---- Modal ---- */
+.modal-overlay{
+  position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:100;
+  display:flex;align-items:center;justify-content:center;
+}
+.modal{
+  background:var(--surface);border:1px solid var(--border);
+  border-radius:12px;padding:20px;width:600px;max-height:80vh;overflow:auto;
+}
+.modal h3{margin-bottom:12px}
+.modal pre{
+  background:var(--surface2);padding:12px;border-radius:8px;
+  font-size:12px;color:var(--text);white-space:pre-wrap;overflow:auto;
+}
+
+/* ---- Utilities ---- */
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
+::-webkit-scrollbar{width:5px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}

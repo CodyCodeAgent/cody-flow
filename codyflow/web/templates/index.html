@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CodyFlow - AI 工作流编排</title>
+<link rel="stylesheet" href="/static/css/main.css">
+</head>
+<body>
+<div id="app">
+  <app-header
+    :current-page="currentPage"
+    @navigate="currentPage = $event"
+    @run="runFlow"
+    @export="exportYAML"
+    @load-template="loadTemplate"
+  ></app-header>
+
+  <!-- Editor Page -->
+  <div class="editor-layout" v-show="currentPage === 'editor'">
+    <node-palette @add-node="addNodeAtCenter"></node-palette>
+    <flow-canvas
+      ref="canvas"
+      :nodes="store.flow.nodes"
+      :edges="store.flow.edges"
+      :selected-node="store.selectedNode"
+      :run-status="store.runStatus"
+      @select-node="store.selectedNode = $event"
+      @update-node-pos="updateNodePos"
+      @add-edge="addEdge"
+      @remove-edge="removeEdge"
+      @edit-edge="editEdge"
+      @drop-node="handleDropNode"
+    ></flow-canvas>
+    <props-panel
+      :node="selectedNodeData"
+      :edges="store.flow.edges"
+      @update="updateNodeProp"
+      @rename="renameNode"
+      @remove="removeNode"
+    ></props-panel>
+  </div>
+
+  <!-- Settings Page -->
+  <settings-page
+    v-show="currentPage === 'settings'"
+    :config="store.config"
+    :env-status="store.envStatus"
+    @save-config="saveConfig"
+    @check-env="checkEnvironment"
+  ></settings-page>
+</div>
+
+<script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+<script src="/static/js/store.js"></script>
+<script src="/static/js/api.js"></script>
+<script src="/static/components/header.js"></script>
+<script src="/static/components/node-palette.js"></script>
+<script src="/static/components/flow-canvas.js"></script>
+<script src="/static/components/props-panel.js"></script>
+<script src="/static/components/settings.js"></script>
+<script src="/static/js/app.js"></script>
+</body>
+</html>
