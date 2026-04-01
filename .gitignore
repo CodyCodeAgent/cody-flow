@@ -1,9 +1,37 @@
+# Python
 __pycache__/
 *.pyc
 *.pyo
+*.pyd
 *.egg-info/
+*.egg
 dist/
 build/
+*.whl
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Testing
 .pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# CodyFlow runtime data
 *.db
 .codyflow/
+
+# Ruff / mypy
+.ruff_cache/
+.mypy_cache/
