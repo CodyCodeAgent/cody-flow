@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from pathlib import Path
 
 import click
@@ -10,9 +11,10 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.prompt import Prompt
 
-from codyflow.engine.flow import Flow, parse_flow
+from codyflow.engine.flow import Flow, parse_flow, validate_flow
 
 console = Console()
+logger = logging.getLogger(__name__)
 
 
 def _parse_vars(var_list: tuple[str, ...]) -> dict[str, str]:
@@ -29,18 +31,42 @@ def _parse_vars(var_list: tuple[str, ...]) -> dict[str, str]:
 async def _interactive_input(node_id: str, ai_output: str) -> str:
     """Ask user for input during interactive nodes."""
     console.print(f"\n[bold cyan]AI ({node_id}):[/bold cyan]")
-    console.print(ai_output[:500] + ("..." if len(ai_output) > 500 else ""))
+    console.print(ai_output[:2000] + ("..." if len(ai_output) > 2000 else ""))
     console.print()
     return Prompt.ask(
-        f"[bold]你的回复[/bold] (输入 'done' 结束讨论)",
+        "[bold]你的回复[/bold] (输入 'done' 结束讨论)",
         default="done",
     )
 
 
+def _setup_flow_callbacks(flow: Flow):
+    """Attach progress reporting callbacks to a flow."""
+    flow.on_node_start = lambda nid, ntype: console.print(
+        f"\n[yellow]▶ 执行节点:[/yellow] {nid} ({ntype})"
+    )
+    flow.on_node_complete = lambda nid, result: console.print(
+        f"[green]✓ 完成:[/green] {nid}"
+    )
+    flow.on_flow_complete = lambda state: console.print(
+        Panel(
+            f"[bold green]Flow 执行完成[/bold green] — "
+            f"共 {len(state.get('completed_nodes', []))} 个节点, "
+            f"迭代 {state.get('iteration', 0)} 轮",
+            style="green",
+        )
+    )
+    flow.on_interactive_input = _interactive_input
+
+
 @click.group()
 @click.version_option(package_name="codyflow")
-def main():
+@click.option("--debug", is_flag=True, help="启用调试日志")
+def main(debug: bool):
     """CodyFlow - AI workflow orchestration framework."""
+    logging.basicConfig(
+        level=logging.DEBUG if debug else logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
 
 
 @main.command()
@@ -60,23 +86,13 @@ def run(flow_file: str, workdir: str, user_input: str, runner: str | None, varia
     if runner:
         definition.runner = runner
 
-    flow = Flow(definition, workdir)
+    # Validate and show warnings
+    errors = validate_flow(definition)
+    for err in errors:
+        console.print(f"[yellow]⚠ {err}[/yellow]")
 
-    # Progress callbacks
-    flow.on_node_start = lambda nid, ntype: console.print(
-        f"\n[yellow]▶ 执行节点:[/yellow] {nid} ({ntype})"
-    )
-    flow.on_node_complete = lambda nid, result: console.print(
-        f"[green]✓ 完成:[/green] {nid}"
-    )
-    flow.on_flow_complete = lambda state: console.print(
-        Panel(
-            f"[bold green]Flow 执行完成[/bold green] — "
-            f"共 {len(state.get('completed_nodes', []))} 个节点",
-            style="green",
-        )
-    )
-    flow.on_interactive_input = _interactive_input
+    flow = Flow(definition, workdir)
+    _setup_flow_callbacks(flow)
 
     asyncio.run(flow.run(user_input))
 
@@ -93,7 +109,7 @@ def init(name: str, workdir: str):
     (codyflow_dir / "logs").mkdir(exist_ok=True)
 
     flow_file = workdir / f"{name}.flow.yaml"
-    flow_file.write_text(f"""\
+    flow_file.write_text("""\
 name: "{name}"
 description: "{{task_description}}"
 runner: cody
@@ -141,7 +157,7 @@ edges:
   - from: judge
     to: END
     condition: passed
-""", encoding="utf-8")
+""".replace("{name}", name), encoding="utf-8")
 
     console.print(f"[green]✓[/green] 已创建 {flow_file}")
     console.print(f"[green]✓[/green] 已创建 {codyflow_dir}/")
@@ -155,27 +171,27 @@ edges:
 @main.command()
 @click.argument("flow_file", type=click.Path(exists=True))
 @click.option("--workdir", "-w", default=".", help="项目工作目录")
-def resume(flow_file: str, workdir: str):
+@click.option("--input", "-i", "user_input", default="", help="补充任务描述")
+def resume(flow_file: str, workdir: str, user_input: str):
     """从断点恢复执行 Flow"""
     workdir = str(Path(workdir).resolve())
+
+    # Check state.db exists
+    state_db = Path(workdir) / ".codyflow" / "state.db"
+    if not state_db.exists():
+        console.print(
+            "[red]✗ 未找到执行状态文件 (.codyflow/state.db)[/red]\n"
+            "  没有可恢复的 Flow，请使用 [bold]codyflow run[/bold] 开始新的执行。"
+        )
+        raise SystemExit(1)
 
     console.print(Panel(f"[bold]CodyFlow[/bold] — 恢复 {flow_file}", style="yellow"))
 
     definition = parse_flow(flow_file)
     flow = Flow(definition, workdir)
+    _setup_flow_callbacks(flow)
 
-    flow.on_node_start = lambda nid, ntype: console.print(
-        f"\n[yellow]▶ 恢复节点:[/yellow] {nid} ({ntype})"
-    )
-    flow.on_node_complete = lambda nid, result: console.print(
-        f"[green]✓ 完成:[/green] {nid}"
-    )
-    flow.on_flow_complete = lambda state: console.print(
-        Panel("[bold green]Flow 恢复执行完成[/bold green]", style="green")
-    )
-    flow.on_interactive_input = _interactive_input
-
-    asyncio.run(flow.run())
+    asyncio.run(flow.run(user_input))
 
 
 if __name__ == "__main__":

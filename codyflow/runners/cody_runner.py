@@ -38,7 +38,10 @@ class CodyRunner(Runner):
 
     async def close(self):
         if self._client is not None:
-            await self._client.__aexit__(None, None, None)
+            try:
+                await self._client.__aexit__(None, None, None)
+            except Exception:
+                pass
             self._client = None
 
 

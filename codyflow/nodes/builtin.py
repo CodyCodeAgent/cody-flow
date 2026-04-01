@@ -2,12 +2,21 @@
 
 from __future__ import annotations
 
+import logging
+
 from codyflow.nodes.base import FlowState, Node, NodeConfig, NodeResult
 from codyflow.nodes.registry import register_node_type
 
+logger = logging.getLogger(__name__)
+
 
 class DiscussNode(Node):
-    """Discussion node - interactive multi-turn analysis with user."""
+    """Discussion node - interactive multi-turn analysis with user.
+
+    This node defaults to interactive mode. The flow engine handles
+    multi-turn conversation via session_id; the node itself only needs
+    to build prompts and execute single turns.
+    """
 
     node_type = "discuss"
     default_prompt = (
@@ -16,26 +25,17 @@ class DiscussNode(Node):
         "与用户进行多轮对话，直到用户确认讨论结束。\n"
         "最终产出一份清晰的讨论结论文档。"
     )
+    default_interactive = True
 
     def __init__(self, config: NodeConfig):
-        # 讨论节点默认开启交互模式
-        config.interactive = config.interactive or True
         super().__init__(config)
+        # Discuss nodes default to interactive unless explicitly set to False
+        if not config.extra.get("_interactive_explicit"):
+            config.interactive = True
 
     async def execute(self, runner, state: FlowState) -> NodeResult:
         prompt = self.build_prompt(state)
-
-        # 交互模式：使用 session_id 支持多轮对话
-        user_msg = state.get("user_message", "")
-        session_id = state.get("_discuss_session_id")
-
-        if user_msg and session_id:
-            # 后续轮次：用户追加消息
-            result = await runner.run(user_msg, session_id=session_id)
-        else:
-            # 首轮：发送完整 prompt
-            result = await runner.run(prompt)
-
+        result = await runner.run(prompt)
         return NodeResult(
             node_id=self.config.id,
             output=result.output,
@@ -114,7 +114,12 @@ class ReflectNode(Node):
 
 
 class JudgeNode(Node):
-    """Judge node - decides routing based on upstream output."""
+    """Judge node - decides routing based on upstream output.
+
+    The AI must output a line starting with "ROUTE: <decision>".
+    If no ROUTE line is found, defaults to "needs_fix" (conservative —
+    better to review again than to silently pass).
+    """
 
     node_type = "judge"
     default_prompt = (
@@ -129,13 +134,19 @@ class JudgeNode(Node):
         prompt = self.build_prompt(state)
         result = await runner.run(prompt)
 
-        # Parse routing decision from output
-        route = "passed"
+        # Parse routing decision — default to needs_fix (conservative)
+        route = "needs_fix"
         for line in result.output.splitlines():
             stripped = line.strip()
-            if stripped.startswith("ROUTE:"):
-                route = stripped.split(":", 1)[1].strip().split()[0]
+            if stripped.upper().startswith("ROUTE:"):
+                raw_route = stripped.split(":", 1)[1].strip().split()[0].lower()
+                route = raw_route
                 break
+        else:
+            logger.warning(
+                f"Judge node '{self.config.id}' did not output a ROUTE line, "
+                f"defaulting to 'needs_fix'"
+            )
 
         return NodeResult(
             node_id=self.config.id,
@@ -150,12 +161,18 @@ class CustomNode(Node):
 
     Can be used to create any kind of node: pause, user-input,
     API call, testing, deployment, etc.
+    Set interactive: true in YAML for multi-turn conversation.
     """
 
     node_type = "custom"
     default_prompt = ""
 
     async def execute(self, runner, state: FlowState) -> NodeResult:
+        if not self.prompt:
+            logger.warning(
+                f"Custom node '{self.config.id}' has no prompt — "
+                f"executing with empty task"
+            )
         prompt = self.build_prompt(state)
         result = await runner.run(prompt)
         return NodeResult(

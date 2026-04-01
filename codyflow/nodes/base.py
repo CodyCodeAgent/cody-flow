@@ -124,18 +124,17 @@ class Node(abc.ABC):
             ctx_path = Path(context_dir)
             if ctx_path.exists():
                 files = sorted(ctx_path.iterdir())
-                if files:
+                context_files = [f for f in files if f.is_file()]
+                if context_files:
                     sections.append("\n可用的上下文文件:")
                     node_map = state.get("node_map", [])
-                    for f in files:
-                        if not f.is_file():
-                            continue
+                    for f in context_files:
                         producer = "用户输入" if f.name == "user_input.md" else "未知"
                         for nm in node_map:
                             if f.name in nm.get("outputs", []):
                                 producer = f"{nm['id']} ({nm['type']})"
                                 break
-                        sections.append(f"- {f}  (来自: {producer})")
+                        sections.append(f"- {f.name}  (来自: {producer})")
 
         sections.append("\n你可以自行读取任何你需要的文件来了解上下文。")
 
