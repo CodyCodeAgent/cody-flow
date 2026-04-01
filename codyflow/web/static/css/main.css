@@ -223,6 +223,54 @@ body{
   font-size:12px;color:var(--text);white-space:pre-wrap;overflow:auto;
 }
 
+/* ---- Sidebar Tabs ---- */
+.sidebar-tabs{
+  display:flex;gap:2px;margin-bottom:14px;
+  border-bottom:1px solid var(--border);padding-bottom:8px;
+}
+.sidebar-tabs button{
+  flex:1;padding:5px 8px;border-radius:5px;border:none;
+  background:transparent;color:var(--text2);font-size:11px;
+  cursor:pointer;transition:all .2s;font-family:inherit;
+}
+.sidebar-tabs button:hover{color:var(--text);background:var(--surface2)}
+.sidebar-tabs button.active{color:var(--accent);background:var(--accent)11;font-weight:600}
+
+/* ---- Context File Browser ---- */
+.context-list{display:flex;flex-direction:column;gap:4px;margin-bottom:12px}
+.context-item{
+  padding:6px 8px;border-radius:6px;background:var(--surface2);
+  border:1px solid var(--border);cursor:pointer;transition:all .15s;
+}
+.context-item:hover{border-color:var(--accent)}
+.context-item.active{border-color:var(--accent);background:var(--accent)11}
+.context-name{font-size:11px;font-weight:500;font-family:monospace}
+.context-meta{font-size:9px;color:var(--text2);margin-top:2px}
+.context-preview{margin-top:8px}
+.context-preview h4{font-size:11px;color:var(--text2);margin-bottom:4px}
+.context-preview pre{
+  font-size:10px;max-height:200px;overflow:auto;
+  background:var(--surface2);padding:8px;border-radius:6px;
+  white-space:pre-wrap;word-break:break-all;
+}
+
+/* ---- Zoom Controls ---- */
+.zoom-controls{
+  position:absolute;top:12px;right:12px;z-index:5;
+  display:flex;align-items:center;gap:4px;
+  background:var(--surface);border:1px solid var(--border);
+  border-radius:8px;padding:4px 6px;
+}
+.zoom-label{font-size:10px;color:var(--text2);min-width:32px;text-align:center}
+
+/* ---- Event Detail ---- */
+.event-time{color:var(--text2);margin-right:4px;font-size:9px}
+.event-detail{
+  font-size:10px;color:var(--text2);margin-top:2px;
+  padding-left:8px;border-left:2px solid var(--border);
+}
+.events-log .event.route{color:var(--cyan)}
+
 /* ---- Utilities ---- */
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
 ::-webkit-scrollbar{width:5px}

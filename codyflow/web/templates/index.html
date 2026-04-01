@@ -10,27 +10,38 @@
 <div id="app">
   <app-header
     :current-page="currentPage"
+    :run-status="store.runStatus"
     @navigate="currentPage = $event"
-    @run="runFlow"
+    @run="showRunFlowDialog"
+    @stop="stopFlow"
     @export="exportYAML"
     @load-template="loadTemplate"
   ></app-header>
 
   <!-- Editor Page -->
   <div class="editor-layout" v-show="currentPage === 'editor'">
-    <node-palette @add-node="addNodeAtCenter"></node-palette>
+    <node-palette
+      @add-node="addNodeAtCenter"
+      @load-context-file="loadContextFile"
+    ></node-palette>
     <flow-canvas
       ref="canvas"
       :nodes="store.flow.nodes"
       :edges="store.flow.edges"
       :selected-node="store.selectedNode"
       :run-status="store.runStatus"
+      :running-nodes="store.runningNodes"
+      :completed-nodes="store.completedNodes"
+      :scale="store.canvasScale"
+      :offset-x="store.canvasOffsetX"
+      :offset-y="store.canvasOffsetY"
       @select-node="store.selectedNode = $event"
       @update-node-pos="updateNodePos"
       @add-edge="addEdge"
       @remove-edge="removeEdge"
       @edit-edge="editEdge"
       @drop-node="handleDropNode"
+      @update-transform="updateTransform"
     ></flow-canvas>
     <props-panel
       :node="selectedNodeData"
@@ -49,6 +60,42 @@
     @save-config="saveConfig"
     @check-env="checkEnvironment"
   ></settings-page>
+
+  <!-- Run Dialog Modal -->
+  <div class="modal-overlay" v-if="store.showRunDialog" @click.self="closeRunDialog">
+    <div class="modal">
+      <h3>运行 Flow</h3>
+      <div class="form-group">
+        <label>工作目录</label>
+        <input v-model="store.runWorkdir" placeholder="项目根目录路径">
+      </div>
+      <div class="form-group">
+        <label>任务描述 / 需求</label>
+        <textarea rows="4" v-model="store.runUserInput" placeholder="描述你希望 AI 完成的任务..."></textarea>
+      </div>
+      <div class="form-group">
+        <label>Runner</label>
+        <input :value="store.flow.runner" disabled style="opacity:.6">
+        <div style="font-size:10px;color:var(--text2);margin-top:2px">使用 Flow 配置中的默认 Runner</div>
+      </div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
+        <button class="btn btn-outline btn-sm" @click="closeRunDialog">取消</button>
+        <button class="btn btn-primary btn-sm" @click="runFlow">开始运行</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- YAML Export Modal -->
+  <div class="modal-overlay" v-if="showYamlModal" @click.self="showYamlModal=false">
+    <div class="modal">
+      <h3>YAML 导出</h3>
+      <pre>{{ yamlContent }}</pre>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">
+        <button class="btn btn-outline btn-sm" @click="copyYaml">复制</button>
+        <button class="btn btn-outline btn-sm" @click="showYamlModal=false">关闭</button>
+      </div>
+    </div>
+  </div>
 </div>
 
 <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>

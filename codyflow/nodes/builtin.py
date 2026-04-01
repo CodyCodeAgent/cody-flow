@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 
 from codyflow.nodes.base import FlowState, Node, NodeConfig, NodeResult
 from codyflow.nodes.registry import register_node_type
@@ -116,44 +117,130 @@ class ReflectNode(Node):
 class JudgeNode(Node):
     """Judge node - decides routing based on upstream output.
 
-    The AI must output a line starting with "ROUTE: <decision>".
-    If no ROUTE line is found, defaults to "needs_fix" (conservative —
+    Uses multiple strategies to parse the routing decision:
+    1. "ROUTE: <decision>" — explicit route marker
+    2. "Decision: <decision>" / "判断: <decision>" — alternative markers
+    3. Keyword detection — looks for "passed"/"通过" vs "needs_fix"/"需要修改"
+
+    If no decision can be parsed, defaults to "needs_fix" (conservative —
     better to review again than to silently pass).
+
+    Also extracts the reasoning text (everything after the route line)
+    into metadata["reasoning"] for display in the UI.
     """
 
     node_type = "judge"
     default_prompt = (
-        "你是判断节点。请阅读最近的反思报告，判断是否还有需要修改的问题。\n"
-        "你的回答必须以下面两种格式之一开头：\n"
+        "你是判断节点。请阅读最近的反思报告，判断是否还有需要修改的问题。\n\n"
+        "你的回答必须包含以下格式的决定行：\n"
         "ROUTE: needs_fix — 如果还有问题需要修改\n"
-        "ROUTE: passed — 如果所有问题已解决，质量达标\n"
-        "然后简要说明判断理由。"
+        "ROUTE: passed — 如果所有问题已解决，质量达标\n\n"
+        "然后详细说明判断理由，包括：\n"
+        "1. 主要发现的问题（如有）\n"
+        "2. 代码质量评估\n"
+        "3. 需求满足程度\n"
+        "4. 做出该判断的核心原因"
     )
+
+    # Patterns to detect route decisions (order matters — first match wins)
+    _ROUTE_PATTERNS = [
+        # "ROUTE: passed" / "ROUTE: needs_fix"
+        re.compile(r"^\s*ROUTE\s*[:：]\s*(\S+)", re.IGNORECASE),
+        # "Decision: passed" / "Decision: needs_fix"
+        re.compile(r"^\s*Decision\s*[:：]\s*(\S+)", re.IGNORECASE),
+        # "判断: passed" / "判断结果: needs_fix"
+        re.compile(r"^\s*判断(?:结果)?\s*[:：]\s*(\S+)"),
+        # "结论: passed"
+        re.compile(r"^\s*结论\s*[:：]\s*(\S+)"),
+    ]
+
+    # Keywords that map to specific routes
+    _PASS_KEYWORDS = {"passed", "pass", "ok", "approved", "lgtm", "通过", "达标", "合格"}
+    _FIX_KEYWORDS = {"needs_fix", "fix", "failed", "reject", "需要修改", "不通过", "不合格", "需修改"}
 
     async def execute(self, runner, state: FlowState) -> NodeResult:
         prompt = self.build_prompt(state)
         result = await runner.run(prompt)
 
-        # Parse routing decision — default to needs_fix (conservative)
-        route = "needs_fix"
-        for line in result.output.splitlines():
-            stripped = line.strip()
-            if stripped.upper().startswith("ROUTE:"):
-                raw_route = stripped.split(":", 1)[1].strip().split()[0].lower()
-                route = raw_route
-                break
-        else:
-            logger.warning(
-                f"Judge node '{self.config.id}' did not output a ROUTE line, "
-                f"defaulting to 'needs_fix'"
-            )
+        route, reasoning = self._parse_route(result.output)
 
         return NodeResult(
             node_id=self.config.id,
             output=result.output,
             output_files=self.config.outputs,
-            metadata={"route": route},
+            metadata={
+                "route": route,
+                "reasoning": reasoning,
+            },
         )
+
+    def _parse_route(self, output: str) -> tuple[str, str]:
+        """Parse routing decision and reasoning from judge output.
+
+        Returns (route, reasoning) tuple.
+        """
+        lines = output.splitlines()
+        route = None
+        route_line_idx = -1
+
+        # Strategy 1: Look for explicit route markers
+        for i, line in enumerate(lines):
+            for pattern in self._ROUTE_PATTERNS:
+                m = pattern.match(line)
+                if m:
+                    raw = m.group(1).strip().lower().rstrip(".,;!。，；！")
+                    route = self._normalize_route(raw)
+                    route_line_idx = i
+                    break
+            if route is not None:
+                break
+
+        # Strategy 2: Keyword detection in full output (fallback)
+        if route is None:
+            output_lower = output.lower()
+            has_pass = any(kw in output_lower for kw in self._PASS_KEYWORDS)
+            has_fix = any(kw in output_lower for kw in self._FIX_KEYWORDS)
+
+            if has_pass and not has_fix:
+                route = "passed"
+            elif has_fix and not has_pass:
+                route = "needs_fix"
+            elif has_fix and has_pass:
+                # Both present — conservative: needs_fix
+                route = "needs_fix"
+                logger.info(
+                    f"Judge '{self.config.id}' output contains both pass and fix keywords, "
+                    f"defaulting to 'needs_fix'"
+                )
+            else:
+                route = "needs_fix"
+                logger.warning(
+                    f"Judge '{self.config.id}' could not parse route from output, "
+                    f"defaulting to 'needs_fix'"
+                )
+
+        # Extract reasoning — everything after the route line, or full output if no marker
+        if route_line_idx >= 0:
+            reasoning_lines = lines[route_line_idx + 1:]
+            reasoning = "\n".join(reasoning_lines).strip()
+        else:
+            # No explicit marker found — use entire output as reasoning
+            reasoning = output.strip()
+
+        # Truncate reasoning to a reasonable length for metadata
+        if len(reasoning) > 1000:
+            reasoning = reasoning[:1000] + "..."
+
+        return route, reasoning
+
+    def _normalize_route(self, raw: str) -> str:
+        """Normalize a raw route string to a canonical form."""
+        if raw in self._PASS_KEYWORDS:
+            return "passed"
+        if raw in self._FIX_KEYWORDS:
+            return "needs_fix"
+        # Return as-is for custom routes (user-defined conditions)
+        return raw
 
 
 class CustomNode(Node):

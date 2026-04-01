@@ -10,6 +10,7 @@ const app = createApp({
       currentPage: 'editor',
       store,
       pollTimer: null,
+      sseSource: null,
       showYamlModal: false,
       yamlContent: '',
     };
@@ -107,6 +108,13 @@ const app = createApp({
       }
     },
 
+    // ---- Canvas transform ----
+    updateTransform(delta) {
+      if (delta.scale !== undefined) store.canvasScale = delta.scale;
+      if (delta.offsetX !== undefined) store.canvasOffsetX = delta.offsetX;
+      if (delta.offsetY !== undefined) store.canvasOffsetY = delta.offsetY;
+    },
+
     // ---- Template ----
     loadTemplate() {
       store.flow.nodes = [
@@ -158,10 +166,24 @@ const app = createApp({
       navigator.clipboard.writeText(this.yamlContent);
     },
 
+    // ---- Run dialog ----
+    showRunFlowDialog() {
+      store.runWorkdir = store.config.general.workdir || '.';
+      store.runUserInput = '';
+      store.showRunDialog = true;
+    },
+
+    closeRunDialog() {
+      store.showRunDialog = false;
+    },
+
     // ---- Run flow ----
     async runFlow() {
+      store.showRunDialog = false;
       store.runEvents = [];
       store.runStatus = 'running';
+      store.runningNodes = [];
+      store.completedNodes = [];
 
       try {
         const payload = {
@@ -179,37 +201,164 @@ const app = createApp({
           edges: store.flow.edges,
         };
 
-        await API.post('/api/flow/run', payload);
-        this.startPolling();
+        await API.runFlow(payload, store.runWorkdir, store.runUserInput);
+        this.connectSSE();
       } catch (e) {
         store.runStatus = 'failed';
         store.runEvents.push({ type: 'error', text: '启动失败: ' + e.message });
       }
     },
 
+    // ---- SSE connection ----
+    connectSSE() {
+      if (this.sseSource) {
+        this.sseSource.close();
+      }
+
+      this.sseSource = API.connectSSE();
+
+      this.sseSource.onmessage = (event) => {
+        try {
+          const ev = JSON.parse(event.data);
+          this.handleFlowEvent(ev);
+        } catch (e) { /* ignore parse errors */ }
+      };
+
+      this.sseSource.onerror = () => {
+        // SSE disconnected — fallback to polling
+        if (this.sseSource) {
+          this.sseSource.close();
+          this.sseSource = null;
+        }
+        if (store.runStatus === 'running') {
+          this.startPolling();
+        }
+      };
+    },
+
+    handleFlowEvent(ev) {
+      const time = ev.timestamp ? new Date(ev.timestamp * 1000).toLocaleTimeString() : '';
+
+      if (ev.type === 'node_start') {
+        store.runningNodes = [...store.runningNodes.filter(id => id !== ev.node_id), ev.node_id];
+        store.runEvents.push({
+          type: 'node_start', time,
+          text: `▶ ${ev.node_id} (${ev.node_type})`,
+          detail: ev.iteration > 0 ? `迭代 ${ev.iteration}/${ev.max_iterations}` : '',
+        });
+      } else if (ev.type === 'node_complete') {
+        store.runningNodes = store.runningNodes.filter(id => id !== ev.node_id);
+        if (!store.completedNodes.includes(ev.node_id)) {
+          store.completedNodes.push(ev.node_id);
+        }
+        let text = `✓ ${ev.node_id}`;
+        if (ev.duration) text += ` (${ev.duration}s)`;
+        let detail = '';
+        if (ev.route) {
+          detail = `路由决定: ${ev.route}`;
+          if (ev.reasoning) detail += ` — ${ev.reasoning.substring(0, 100)}`;
+        }
+        store.runEvents.push({ type: 'node_complete', time, text, detail });
+      } else if (ev.type === 'node_error') {
+        store.runEvents.push({
+          type: 'error', time,
+          text: `✗ ${ev.node_id} 错误 (尝试 ${ev.attempt})`,
+          detail: ev.error,
+        });
+      } else if (ev.type === 'flow_complete') {
+        store.runStatus = 'completed';
+        store.runningNodes = [];
+        store.runEvents.push({
+          type: 'node_complete', time,
+          text: `✓ Flow 完成 (${ev.completed_nodes.length} 节点, ${ev.iteration} 迭代, ${ev.total_duration}s)`,
+        });
+        this.disconnectSSE();
+        this.refreshContextFiles();
+      } else if (ev.type === 'flow_stopped') {
+        store.runStatus = 'idle';
+        store.runningNodes = [];
+        store.runEvents.push({ type: 'error', time, text: 'Flow 已停止' });
+        this.disconnectSSE();
+      } else if (ev.type === 'interactive_turn') {
+        store.runEvents.push({
+          type: 'node_start', time,
+          text: `💬 ${ev.node_id} 对话轮次 ${ev.turn} (${ev.role})`,
+        });
+      } else if (ev.type === 'node_skipped') {
+        store.runEvents.push({
+          type: 'error', time,
+          text: `⊘ ${ev.node_id} 已跳过`,
+          detail: ev.error,
+        });
+      }
+
+      // Auto-scroll log
+      this.$nextTick(() => {
+        const log = document.querySelector('.events-log');
+        if (log) log.scrollTop = log.scrollHeight;
+      });
+    },
+
+    disconnectSSE() {
+      if (this.sseSource) {
+        this.sseSource.close();
+        this.sseSource = null;
+      }
+      if (this.pollTimer) {
+        clearInterval(this.pollTimer);
+        this.pollTimer = null;
+      }
+    },
+
+    // ---- Polling fallback ----
     startPolling() {
       this.pollTimer = setInterval(async () => {
         try {
-          const data = await API.get('/api/flow/status');
-          store.runEvents = data.events.map(ev => {
-            if (ev.type === 'node_start') return { type: 'node_start', text: `▶ ${ev.node_id} (${ev.node_type})` };
-            if (ev.type === 'node_complete') return { type: 'node_complete', text: `✓ ${ev.node_id}` };
-            if (ev.type === 'flow_complete') return { type: 'node_complete', text: `✓ Flow 完成 (${ev.completed.length} 节点)` };
-            return { type: 'error', text: JSON.stringify(ev) };
-          });
-
+          const data = await API.getFlowStatus();
           if (data.status !== 'running') {
             clearInterval(this.pollTimer);
+            this.pollTimer = null;
             store.runStatus = data.status === 'completed' ? 'completed' : 'failed';
+            this.refreshContextFiles();
           }
         } catch (e) { /* ignore poll errors */ }
-      }, 1000);
+      }, 2000);
+    },
+
+    // ---- Stop flow ----
+    async stopFlow() {
+      try {
+        await API.stopFlow();
+        store.runStatus = 'idle';
+        store.runningNodes = [];
+        this.disconnectSSE();
+      } catch (e) {
+        alert('停止失败: ' + e.message);
+      }
+    },
+
+    // ---- Context file browser ----
+    async refreshContextFiles() {
+      try {
+        const data = await API.listContextFiles(store.runWorkdir || '.');
+        store.contextFiles = data.files;
+      } catch (e) { /* ignore */ }
+    },
+
+    async loadContextFile(filename) {
+      try {
+        const data = await API.readContextFile(filename, store.runWorkdir || '.');
+        store.selectedContextFile = filename;
+        store.contextFileContent = data.content;
+      } catch (e) {
+        alert('读取失败: ' + e.message);
+      }
     },
 
     // ---- Settings ----
     async saveConfig(config) {
       try {
-        await API.post('/api/config/save', config);
+        await API.saveConfig(config);
         store.runEvents.push({ type: 'node_complete', text: '✓ 配置已保存' });
       } catch (e) {
         alert('保存失败: ' + e.message);
@@ -218,16 +367,32 @@ const app = createApp({
 
     async checkEnvironment() {
       try {
-        const data = await API.get('/api/config/check-env');
+        const data = await API.checkEnvironment();
         Object.assign(store.envStatus, data);
       } catch (e) {
         alert('检测失败: ' + e.message);
       }
     },
+
+    // ---- Init ----
+    async loadSavedConfig() {
+      try {
+        const cfg = await API.loadConfig();
+        if (cfg && Object.keys(cfg).length > 0) {
+          if (cfg.cody) Object.assign(store.config.cody, cfg.cody);
+          if (cfg.claude_code) Object.assign(store.config.claude_code, cfg.claude_code);
+          if (cfg.general) Object.assign(store.config.general, cfg.general);
+        }
+      } catch (e) { /* ignore */ }
+    },
+  },
+
+  mounted() {
+    this.loadSavedConfig();
   },
 
   beforeUnmount() {
-    if (this.pollTimer) clearInterval(this.pollTimer);
+    this.disconnectSSE();
   },
 });
 

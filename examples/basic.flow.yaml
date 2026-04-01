@@ -1,0 +1,47 @@
+name: "basic-feature"
+description: "{task_description}"
+runner: cody
+max_iterations: 3
+
+nodes:
+  - id: discuss
+    type: discuss
+    interactive: true
+    outputs:
+      - discuss_output.md
+
+  - id: learn
+    type: learn
+    outputs:
+      - learn_output.md
+
+  - id: code
+    type: code
+    outputs:
+      - code_output.md
+
+  - id: reflect
+    type: reflect
+    outputs:
+      - reflect_output.md
+
+  - id: judge
+    type: judge
+    outputs:
+      - judge_output.md
+
+edges:
+  - from: discuss
+    to: learn
+  - from: learn
+    to: code
+  - from: code
+    to: reflect
+  - from: reflect
+    to: judge
+  - from: judge
+    to: code
+    condition: needs_fix
+  - from: judge
+    to: END
+    condition: passed

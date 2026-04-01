@@ -3,8 +3,8 @@
    ============================================================ */
 
 const AppHeader = {
-  props: ['currentPage'],
-  emits: ['navigate', 'run', 'export', 'loadTemplate'],
+  props: ['currentPage', 'runStatus'],
+  emits: ['navigate', 'run', 'stop', 'export', 'loadTemplate'],
   template: `
     <div class="header">
       <div style="display:flex;align-items:center">
@@ -18,7 +18,8 @@ const AppHeader = {
       <div class="header-actions" v-show="currentPage==='editor'">
         <button class="btn btn-outline btn-sm" @click="$emit('loadTemplate')">加载模板</button>
         <button class="btn btn-outline btn-sm" @click="$emit('export')">导出 YAML</button>
-        <button class="btn btn-primary btn-sm" @click="$emit('run')">▶ 运行</button>
+        <button v-if="runStatus==='running'" class="btn btn-danger btn-sm" @click="$emit('stop')">停止</button>
+        <button v-else class="btn btn-primary btn-sm" @click="$emit('run')">运行</button>
       </div>
     </div>
   `,

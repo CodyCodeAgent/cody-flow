@@ -26,7 +26,8 @@ const API = {
   async runFlow(flow, workdir, userInput) {
     return this.post('/api/flow/run', {
       flow,
-      req: { workdir, user_input: userInput },
+      workdir: workdir || '.',
+      user_input: userInput || '',
     });
   },
 
@@ -42,6 +43,30 @@ const API = {
     return this.post('/api/flow/validate', flow);
   },
 
+  // Context file browser
+  async listContextFiles(workdir) {
+    return this.get('/api/context/list?workdir=' + encodeURIComponent(workdir || '.'));
+  },
+
+  async readContextFile(filename, workdir) {
+    return this.get(
+      '/api/context/read?filename=' + encodeURIComponent(filename) +
+      '&workdir=' + encodeURIComponent(workdir || '.')
+    );
+  },
+
+  // Log browser
+  async listLogs(workdir) {
+    return this.get('/api/logs/list?workdir=' + encodeURIComponent(workdir || '.'));
+  },
+
+  async readLog(filename, workdir) {
+    return this.get(
+      '/api/logs/read?filename=' + encodeURIComponent(filename) +
+      '&workdir=' + encodeURIComponent(workdir || '.')
+    );
+  },
+
   // Config operations
   async saveConfig(config) {
     return this.post('/api/config/save', config);
@@ -53,5 +78,10 @@ const API = {
 
   async checkEnvironment() {
     return this.get('/api/config/check-env');
+  },
+
+  // SSE — returns EventSource instance
+  connectSSE() {
+    return new EventSource('/api/flow/events');
   },
 };

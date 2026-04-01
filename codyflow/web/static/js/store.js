@@ -49,6 +49,23 @@ const store = {
   // Run state
   runStatus: 'idle',  // idle | running | completed | failed
   runEvents: [],
+  runningNodes: [],   // node IDs currently executing
+  completedNodes: [], // node IDs that have completed
+
+  // Run dialog
+  showRunDialog: false,
+  runWorkdir: '.',
+  runUserInput: '',
+
+  // Context file browser
+  contextFiles: [],
+  selectedContextFile: null,
+  contextFileContent: '',
+
+  // Canvas zoom/pan
+  canvasScale: 1,
+  canvasOffsetX: 0,
+  canvasOffsetY: 0,
 
   // Configuration
   config: {

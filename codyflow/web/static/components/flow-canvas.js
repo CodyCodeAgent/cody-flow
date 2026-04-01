@@ -1,20 +1,29 @@
 /* ============================================================
-   CodyFlow — Flow Canvas Component
+   CodyFlow — Flow Canvas Component (with zoom/pan + node state)
    ============================================================ */
 
 const FlowCanvas = {
-  props: ['nodes', 'edges', 'selectedNode', 'runStatus'],
-  emits: ['selectNode', 'updateNodePos', 'addEdge', 'removeEdge', 'editEdge', 'dropNode'],
+  props: ['nodes', 'edges', 'selectedNode', 'runStatus', 'runningNodes', 'completedNodes', 'scale', 'offsetX', 'offsetY'],
+  emits: ['selectNode', 'updateNodePos', 'addEdge', 'removeEdge', 'editEdge', 'dropNode', 'updateTransform'],
 
   data() {
     return {
       dragging: null,     // { id, offsetX, offsetY }
       connecting: null,   // { fromId }
       connectLine: null,  // { x1, y1, x2, y2 }
+      panning: false,
+      panStart: null,
     };
   },
 
   computed: {
+    canvasTransform() {
+      const s = this.scale || 1;
+      const ox = this.offsetX || 0;
+      const oy = this.offsetY || 0;
+      return `translate(${ox}px, ${oy}px) scale(${s})`;
+    },
+
     edgePaths() {
       return this.edges.map((edge, idx) => {
         const fromNode = this.nodes.find(n => n.id === edge.from_node);
@@ -48,35 +57,46 @@ const FlowCanvas = {
     nodeClass(node) {
       const classes = ['flow-node'];
       if (this.selectedNode === node.id) classes.push('active');
-      // Run status classes are managed externally
+      if (this.runningNodes && this.runningNodes.includes(node.id)) classes.push('running');
+      if (this.completedNodes && this.completedNodes.includes(node.id)) classes.push('completed');
       return classes.join(' ');
     },
 
     onNodeMouseDown(e, node) {
       if (e.target.classList.contains('port')) return;
       this.$emit('selectNode', node.id);
+      const s = this.scale || 1;
       this.dragging = {
         id: node.id,
-        offsetX: e.clientX - node.x,
-        offsetY: e.clientY - node.y,
+        offsetX: e.clientX / s - node.x,
+        offsetY: e.clientY / s - node.y,
       };
       e.stopPropagation();
     },
 
     onMouseMove(e) {
       if (this.dragging) {
-        const rect = this.$refs.canvasEl.getBoundingClientRect();
-        const x = e.clientX - this.dragging.offsetX;
-        const y = e.clientY - this.dragging.offsetY;
+        const s = this.scale || 1;
+        const x = e.clientX / s - this.dragging.offsetX;
+        const y = e.clientY / s - this.dragging.offsetY;
         this.$emit('updateNodePos', this.dragging.id, x, y);
       }
       if (this.connecting) {
         const rect = this.$refs.canvasEl.getBoundingClientRect();
+        const s = this.scale || 1;
         this.connectLine = {
           ...this.connectLine,
-          x2: e.clientX - rect.left,
-          y2: e.clientY - rect.top,
+          x2: (e.clientX - rect.left - (this.offsetX || 0)) / s,
+          y2: (e.clientY - rect.top - (this.offsetY || 0)) / s,
         };
+      }
+      if (this.panning && this.panStart) {
+        const dx = e.clientX - this.panStart.x;
+        const dy = e.clientY - this.panStart.y;
+        this.$emit('updateTransform', {
+          offsetX: this.panStart.ox + dx,
+          offsetY: this.panStart.oy + dy,
+        });
       }
     },
 
@@ -84,12 +104,39 @@ const FlowCanvas = {
       this.dragging = null;
       this.connecting = null;
       this.connectLine = null;
+      this.panning = false;
+      this.panStart = null;
     },
 
     onCanvasClick(e) {
       if (e.target === this.$refs.canvasEl || e.target.closest('.grid-bg')) {
         this.$emit('selectNode', null);
       }
+    },
+
+    onCanvasMouseDown(e) {
+      // Middle mouse button or ctrl+left for pan
+      if (e.button === 1 || (e.button === 0 && e.ctrlKey)) {
+        e.preventDefault();
+        this.panning = true;
+        this.panStart = {
+          x: e.clientX,
+          y: e.clientY,
+          ox: this.offsetX || 0,
+          oy: this.offsetY || 0,
+        };
+      }
+    },
+
+    onWheel(e) {
+      e.preventDefault();
+      const delta = e.deltaY > 0 ? -0.1 : 0.1;
+      const newScale = Math.max(0.3, Math.min(2, (this.scale || 1) + delta));
+      this.$emit('updateTransform', { scale: newScale });
+    },
+
+    resetZoom() {
+      this.$emit('updateTransform', { scale: 1, offsetX: 0, offsetY: 0 });
     },
 
     startConnect(e, fromId) {
@@ -124,8 +171,9 @@ const FlowCanvas = {
       const type = e.dataTransfer.getData('nodeType');
       if (!type) return;
       const rect = this.$refs.canvasEl.getBoundingClientRect();
-      const x = e.clientX - rect.left - 75;
-      const y = e.clientY - rect.top - 30;
+      const s = this.scale || 1;
+      const x = (e.clientX - rect.left - (this.offsetX || 0)) / s - 75;
+      const y = (e.clientY - rect.top - (this.offsetY || 0)) / s - 30;
       this.$emit('dropNode', type, x, y);
     },
   },
@@ -137,10 +185,12 @@ const FlowCanvas = {
       @drop="onDrop"
       @mousemove="onMouseMove"
       @mouseup="onMouseUp"
+      @mousedown="onCanvasMouseDown"
+      @wheel.prevent="onWheel"
     >
       <div class="grid-bg"></div>
-      <div class="canvas" ref="canvasEl" @mousedown="onCanvasClick">
-        <svg>
+      <div class="canvas" ref="canvasEl" :style="{transform: canvasTransform, transformOrigin: '0 0'}" @mousedown="onCanvasClick">
+        <svg :style="{transform: canvasTransform, transformOrigin: '0 0'}">
           <!-- Edges -->
           <g v-for="ep in edgePaths" :key="'e'+ep.idx">
             <path
@@ -192,8 +242,16 @@ const FlowCanvas = {
 
       <!-- Empty state -->
       <div class="empty-state" v-show="nodes.length === 0">
-        <div class="icon">⬡</div>
+        <div class="icon">&#x2B21;</div>
         <p>从左侧拖拽节点到画布，或双击添加</p>
+      </div>
+
+      <!-- Zoom controls -->
+      <div class="zoom-controls">
+        <button class="btn btn-outline btn-sm" @click="$emit('updateTransform', {scale: Math.min(2, (scale||1)+0.1)})">+</button>
+        <span class="zoom-label">{{ Math.round((scale||1)*100) }}%</span>
+        <button class="btn btn-outline btn-sm" @click="$emit('updateTransform', {scale: Math.max(0.3, (scale||1)-0.1)})">-</button>
+        <button class="btn btn-outline btn-sm" @click="resetZoom" title="重置">R</button>
       </div>
 
       <!-- Status bar -->

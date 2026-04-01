@@ -8,15 +8,17 @@ import logging
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
 import yaml
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from starlette.responses import StreamingResponse
 
 from codyflow.engine.flow import Flow, FlowDefinition, parse_flow, validate_flow, EdgeDef
 from codyflow.nodes.base import NodeConfig
@@ -42,6 +44,7 @@ app.mount("/static", StaticFiles(directory=str(_web_dir / "static")), name="stat
 _current_flow: Flow | None = None
 _flow_task: asyncio.Task | None = None
 _flow_events: list[dict[str, Any]] = []
+_event_queue: asyncio.Queue | None = None
 _config_path = Path.home() / ".codyflow" / "config.json"
 
 
@@ -78,6 +81,7 @@ class FlowModel(BaseModel):
 
 
 class RunRequest(BaseModel):
+    flow: FlowModel
     workdir: str = "."
     user_input: str = ""
 
@@ -133,30 +137,34 @@ async def api_load_flow(path: str = "flow.yaml"):
 
 
 @app.post("/api/flow/run")
-async def api_run_flow(flow: FlowModel):
-    global _current_flow, _flow_task, _flow_events
+async def api_run_flow(req: RunRequest):
+    global _current_flow, _flow_task, _flow_events, _event_queue
 
     if _flow_task and not _flow_task.done():
         raise HTTPException(409, "A flow is already running")
 
     _flow_events = []
-    definition = _model_to_definition(flow)
-    workdir = "."
+    _event_queue = asyncio.Queue()
+    definition = _model_to_definition(req.flow)
+    workdir = str(Path(req.workdir).resolve())
 
-    _current_flow = Flow(definition, workdir)
-    _current_flow.on_node_start = lambda nid, ntype: _flow_events.append(
-        {"type": "node_start", "node_id": nid, "node_type": ntype}
-    )
-    _current_flow.on_node_complete = lambda nid, result: _flow_events.append(
-        {"type": "node_complete", "node_id": nid, "output": result.output[:500]}
-    )
-    _current_flow.on_flow_complete = lambda state: _flow_events.append(
-        {"type": "flow_complete",
-         "completed": state.get("completed_nodes", []),
-         "iteration": state.get("iteration", 0)}
-    )
+    # Load config and inject into runner kwargs
+    runner_config = _load_runner_config()
 
-    _flow_task = asyncio.create_task(_current_flow.run())
+    _current_flow = Flow(definition, workdir, runner_config=runner_config)
+
+    # Wire event callbacks to both list and SSE queue
+    def on_event(event: dict):
+        _flow_events.append(event)
+        if _event_queue:
+            _event_queue.put_nowait(event)
+
+    _current_flow.on_event = on_event
+    _current_flow.on_node_start = lambda nid, ntype: None  # handled by on_event
+    _current_flow.on_node_complete = lambda nid, result: None
+    _current_flow.on_flow_complete = lambda state: None
+
+    _flow_task = asyncio.create_task(_current_flow.run(req.user_input))
     return {"status": "started"}
 
 
@@ -175,13 +183,128 @@ async def api_flow_status():
     return {"status": status, "events": _flow_events}
 
 
+@app.get("/api/flow/events")
+async def api_flow_events_sse():
+    """Server-Sent Events endpoint for real-time flow execution events."""
+    async def event_generator():
+        if not _event_queue:
+            yield f"data: {json.dumps({'type': 'error', 'message': 'No flow running'})}\n\n"
+            return
+
+        # Send any existing events first
+        for ev in _flow_events:
+            yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
+
+        # Then stream new events as they arrive
+        while True:
+            try:
+                event = await asyncio.wait_for(_event_queue.get(), timeout=30.0)
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                if event.get("type") == "flow_complete":
+                    break
+            except asyncio.TimeoutError:
+                # Send keepalive
+                yield f": keepalive\n\n"
+            except Exception:
+                break
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
 @app.post("/api/flow/stop")
 async def api_stop_flow():
     global _flow_task
     if _flow_task and not _flow_task.done():
         _flow_task.cancel()
+        if _event_queue:
+            _event_queue.put_nowait({"type": "flow_stopped", "timestamp": time.time()})
         return {"status": "stopped"}
     return {"status": "not_running"}
+
+
+# ---------------------------------------------------------------------------
+# Context File Browser API
+# ---------------------------------------------------------------------------
+
+@app.get("/api/context/list")
+async def api_list_context(workdir: str = Query(".")):
+    """List all context files in .codyflow/context/."""
+    ctx_dir = Path(workdir).resolve() / ".codyflow" / "context"
+    if not ctx_dir.exists():
+        return {"files": []}
+
+    files = []
+    for f in sorted(ctx_dir.iterdir()):
+        if f.is_file():
+            stat = f.stat()
+            files.append({
+                "name": f.name,
+                "size": stat.st_size,
+                "modified": stat.st_mtime,
+            })
+    return {"files": files}
+
+
+@app.get("/api/context/read")
+async def api_read_context(filename: str, workdir: str = Query(".")):
+    """Read a specific context file."""
+    ctx_dir = Path(workdir).resolve() / ".codyflow" / "context"
+    file_path = ctx_dir / filename
+
+    # Security: prevent path traversal
+    if not file_path.resolve().is_relative_to(ctx_dir.resolve()):
+        raise HTTPException(403, "Access denied")
+
+    if not file_path.exists():
+        raise HTTPException(404, f"File not found: {filename}")
+
+    content = file_path.read_text(encoding="utf-8")
+    return {"name": filename, "content": content, "size": len(content)}
+
+
+@app.get("/api/logs/list")
+async def api_list_logs(workdir: str = Query(".")):
+    """List execution log files."""
+    logs_dir = Path(workdir).resolve() / ".codyflow" / "logs"
+    if not logs_dir.exists():
+        return {"files": []}
+
+    files = []
+    for f in sorted(logs_dir.iterdir(), reverse=True):
+        if f.is_file() and f.suffix == ".jsonl":
+            stat = f.stat()
+            files.append({
+                "name": f.name,
+                "size": stat.st_size,
+                "modified": stat.st_mtime,
+            })
+    return {"files": files[:20]}  # Last 20 runs
+
+
+@app.get("/api/logs/read")
+async def api_read_log(filename: str, workdir: str = Query(".")):
+    """Read a log file and return parsed events."""
+    logs_dir = Path(workdir).resolve() / ".codyflow" / "logs"
+    file_path = logs_dir / filename
+
+    if not file_path.resolve().is_relative_to(logs_dir.resolve()):
+        raise HTTPException(403, "Access denied")
+
+    if not file_path.exists():
+        raise HTTPException(404, f"File not found: {filename}")
+
+    events = []
+    for line in file_path.read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            try:
+                events.append(json.loads(line))
+            except json.JSONDecodeError:
+                pass
+    return {"events": events}
 
 
 # ---------------------------------------------------------------------------
@@ -261,6 +384,16 @@ async def api_check_env():
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _load_runner_config() -> dict:
+    """Load runner config from ~/.codyflow/config.json."""
+    if not _config_path.exists():
+        return {}
+    try:
+        return json.loads(_config_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
 
 def _model_to_definition(flow: FlowModel) -> FlowDefinition:
     nodes = [
