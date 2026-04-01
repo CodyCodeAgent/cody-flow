@@ -184,6 +184,75 @@ async def get_runners():
     return {"runners": list_runners()}
 
 
+@app.get("/api/templates")
+async def api_list_templates():
+    """List available flow templates from examples/ directory."""
+    examples_dir = Path(__file__).parent.parent.parent / "examples"
+    templates = []
+    if examples_dir.exists():
+        for f in sorted(examples_dir.glob("*.yaml")):
+            try:
+                data = yaml.safe_load(f.read_text(encoding="utf-8"))
+                templates.append({
+                    "filename": f.name,
+                    "name": data.get("name", f.stem),
+                    "description": data.get("description", ""),
+                    "node_count": len(data.get("nodes", [])),
+                })
+            except Exception:
+                pass
+    return {"templates": templates}
+
+
+@app.get("/api/templates/{filename}")
+async def api_get_template(filename: str):
+    """Load a specific template by filename."""
+    # Prevent path traversal
+    if "/" in filename or "\\" in filename or ".." in filename:
+        raise HTTPException(403, "Invalid filename")
+    examples_dir = Path(__file__).parent.parent.parent / "examples"
+    file_path = examples_dir / filename
+    if not file_path.exists():
+        raise HTTPException(404, f"Template not found: {filename}")
+    try:
+        data = yaml.safe_load(file_path.read_text(encoding="utf-8"))
+    except yaml.YAMLError as e:
+        raise HTTPException(500, f"Template parse error: {e}")
+
+    # Parse into standardized format with default UI positions
+    nodes = []
+    for i, n in enumerate(data.get("nodes", [])):
+        nodes.append({
+            "id": n.get("id", f"node_{i}"),
+            "type": n.get("type", "custom"),
+            "prompt": n.get("prompt", ""),
+            "outputs": n.get("outputs", []),
+            "runner": n.get("runner"),
+            "interactive": n.get("interactive", False),
+            "error_strategy": n.get("error_strategy", "retry"),
+            "max_retries": n.get("max_retries", 3),
+            "x": 220,
+            "y": 40 + i * 120,
+        })
+
+    edges = []
+    for e in data.get("edges", []):
+        edges.append({
+            "from_node": e.get("from", ""),
+            "to_node": e.get("to", ""),
+            "condition": e.get("condition"),
+        })
+
+    return {
+        "name": data.get("name", "imported"),
+        "description": data.get("description", ""),
+        "runner": data.get("runner", "cody"),
+        "max_iterations": data.get("max_iterations", 3),
+        "nodes": nodes,
+        "edges": edges,
+    }
+
+
 @app.post("/api/flow/validate")
 async def api_validate(flow: FlowModel):
     definition = _model_to_definition(flow)
@@ -300,8 +369,19 @@ async def api_flow_events_sse():
             yield f"data: {json.dumps({'type': 'error', 'message': 'No flow running'})}\n\n"
             return
 
+        # Send already-collected events
+        sent_count = len(_flow_events)
         for ev in _flow_events:
             yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
+
+        # Drain queue of events we already sent (they were added to both lists)
+        drained = 0
+        while not _event_queue.empty() and drained < sent_count:
+            try:
+                _event_queue.get_nowait()
+                drained += 1
+            except asyncio.QueueEmpty:
+                break
 
         while True:
             try:
@@ -338,7 +418,7 @@ async def api_stop_flow():
 
 @app.get("/api/context/list")
 async def api_list_context(workdir: str = Query(".")):
-    ctx_dir = Path(workdir).resolve() / ".codyflow" / "context"
+    ctx_dir = _validate_workdir(workdir) / ".codyflow" / "context"
     if not ctx_dir.exists():
         return {"files": []}
 
@@ -352,7 +432,7 @@ async def api_list_context(workdir: str = Query(".")):
 
 @app.get("/api/context/read")
 async def api_read_context(filename: str, workdir: str = Query(".")):
-    ctx_dir = Path(workdir).resolve() / ".codyflow" / "context"
+    ctx_dir = _validate_workdir(workdir) / ".codyflow" / "context"
     file_path = ctx_dir / filename
 
     if not file_path.resolve().is_relative_to(ctx_dir.resolve()):
@@ -366,7 +446,7 @@ async def api_read_context(filename: str, workdir: str = Query(".")):
 
 @app.get("/api/logs/list")
 async def api_list_logs(workdir: str = Query(".")):
-    logs_dir = Path(workdir).resolve() / ".codyflow" / "logs"
+    logs_dir = _validate_workdir(workdir) / ".codyflow" / "logs"
     if not logs_dir.exists():
         return {"files": []}
 
@@ -380,7 +460,7 @@ async def api_list_logs(workdir: str = Query(".")):
 
 @app.get("/api/logs/read")
 async def api_read_log(filename: str, workdir: str = Query(".")):
-    logs_dir = Path(workdir).resolve() / ".codyflow" / "logs"
+    logs_dir = _validate_workdir(workdir) / ".codyflow" / "logs"
     file_path = logs_dir / filename
 
     if not file_path.resolve().is_relative_to(logs_dir.resolve()):
@@ -465,6 +545,18 @@ async def api_check_env():
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _validate_workdir(workdir: str) -> Path:
+    """Resolve and validate a workdir path. Raises HTTPException on invalid input."""
+    resolved = Path(workdir).resolve()
+    if not resolved.is_dir():
+        raise HTTPException(400, f"工作目录不存在: {resolved}")
+    # Block obvious traversal attempts (e.g. workdir = "/etc" or "/")
+    # Must be at least 2 levels deep to be a plausible project directory
+    if len(resolved.parts) < 3:
+        raise HTTPException(403, f"工作目录不允许: {resolved}")
+    return resolved
+
 
 def _load_runner_config() -> dict:
     if not _config_path.exists():

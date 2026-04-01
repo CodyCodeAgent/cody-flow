@@ -31,6 +31,8 @@ class ClaudeRunner(Runner):
             "cwd": self.workdir,
             "max_turns": self.config.get("max_turns", 30),
         }
+        if self.config.get("model"):
+            options_kwargs["model"] = self.config["model"]
 
         # For multi-turn sessions, include conversation history as system prompt
         if session_id and session_id in self._sessions:

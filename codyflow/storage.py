@@ -29,6 +29,7 @@ class FlowStorage:
             db_path = str(Path.home() / ".codyflow" / "codyflow.db")
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         self.db_path = db_path
+        self._connection: sqlite3.Connection | None = None
         self._init_db()
 
     def _init_db(self):
@@ -45,7 +46,15 @@ class FlowStorage:
             """)
 
     def _conn(self) -> sqlite3.Connection:
-        return sqlite3.connect(self.db_path)
+        if self._connection is None:
+            self._connection = sqlite3.connect(self.db_path)
+        return self._connection
+
+    def close(self):
+        """Close the persistent connection."""
+        if self._connection is not None:
+            self._connection.close()
+            self._connection = None
 
     def list_flows(self) -> list[FlowRecord]:
         """List all saved flows, newest first."""

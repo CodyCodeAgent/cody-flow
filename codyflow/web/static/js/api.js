@@ -99,6 +99,15 @@ const API = {
     return this.get('/api/config/check-env');
   },
 
+  // ---- Templates ----
+  async listTemplates() {
+    return this.get('/api/templates');
+  },
+
+  async getTemplate(filename) {
+    return this.get('/api/templates/' + encodeURIComponent(filename));
+  },
+
   // SSE
   connectSSE() {
     return new EventSource('/api/flow/events');

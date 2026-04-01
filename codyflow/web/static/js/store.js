@@ -29,8 +29,8 @@ const NODE_DESCS = {
   custom:  '自定义节点行为',
 };
 
-// Store object — will be made reactive by Vue
-const store = {
+// Store object — wrapped with Vue.reactive() for proper reactivity
+const store = Vue.reactive({
   // Current flow being edited
   flow: {
     name: '',
@@ -107,4 +107,4 @@ const store = {
     api_key: { ok: false, detail: '' },
     langgraph: { ok: false, detail: '' },
   },
-};
+});

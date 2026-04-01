@@ -21,7 +21,14 @@ class CodyRunner(Runner):
                 raise ImportError(
                     "Cody SDK not installed. Run: pip install codyflow[cody]"
                 )
-            self._client = await AsyncCodyClient(workdir=self.workdir).__aenter__()
+            client_kwargs = {"workdir": self.workdir}
+            if self.config.get("api_key"):
+                client_kwargs["api_key"] = self.config["api_key"]
+            if self.config.get("model"):
+                client_kwargs["model"] = self.config["model"]
+            if self.config.get("base_url"):
+                client_kwargs["base_url"] = self.config["base_url"]
+            self._client = await AsyncCodyClient(**client_kwargs).__aenter__()
         return self._client
 
     async def run(self, prompt: str, session_id: str | None = None) -> RunnerResult:

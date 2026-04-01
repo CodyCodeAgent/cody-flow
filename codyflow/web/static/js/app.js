@@ -180,26 +180,42 @@ const app = createApp({
     },
 
     // ---- Template ----
-    loadTemplate() {
-      if (store.flow.nodes.length > 0 && !confirm('加载模板将覆盖当前编辑内容，继续吗？')) return;
-      store.flow.name = 'basic-feature';
-      store.flow.nodes = [
-        { id:'discuss', type:'discuss', x:220, y:40, prompt:'', outputs:['discuss_output.md'], runner:null, interactive:true, error_strategy:'retry', max_retries:3 },
-        { id:'learn', type:'learn', x:220, y:160, prompt:'', outputs:['learn_output.md'], runner:null, interactive:false, error_strategy:'retry', max_retries:3 },
-        { id:'code', type:'code', x:220, y:280, prompt:'', outputs:['code_output.md'], runner:null, interactive:false, error_strategy:'retry', max_retries:3 },
-        { id:'reflect', type:'reflect', x:220, y:400, prompt:'', outputs:['reflect_output.md'], runner:null, interactive:false, error_strategy:'retry', max_retries:3 },
-        { id:'judge', type:'judge', x:220, y:520, prompt:'', outputs:['judge_output.md'], runner:null, interactive:false, error_strategy:'retry', max_retries:3 },
-      ];
-      store.flow.edges = [
-        { from_node:'discuss', to_node:'learn', condition:null },
-        { from_node:'learn', to_node:'code', condition:null },
-        { from_node:'code', to_node:'reflect', condition:null },
-        { from_node:'reflect', to_node:'judge', condition:null },
-        { from_node:'judge', to_node:'code', condition:'needs_fix' },
-      ];
-      store.selectedNode = null;
-      store.currentFlowId = null;
-      store.nodeIdCounter = 5;
+    async loadTemplate() {
+      try {
+        const data = await API.listTemplates();
+        if (!data.templates || data.templates.length === 0) {
+          alert('没有可用的模板');
+          return;
+        }
+
+        // Build selection prompt
+        const choices = data.templates.map((t, i) => `${i + 1}. ${t.name} (${t.node_count} 节点)`).join('\n');
+        const choice = prompt('选择模板:\n' + choices + '\n\n输入编号:', '1');
+        if (!choice) return;
+
+        const idx = parseInt(choice, 10) - 1;
+        if (idx < 0 || idx >= data.templates.length) {
+          alert('无效的选择');
+          return;
+        }
+
+        if (store.flow.nodes.length > 0 && !confirm('加载模板将覆盖当前编辑内容，继续吗？')) return;
+
+        const tpl = await API.getTemplate(data.templates[idx].filename);
+        store.flow = {
+          name: tpl.name,
+          description: tpl.description,
+          runner: tpl.runner,
+          max_iterations: tpl.max_iterations,
+          nodes: tpl.nodes,
+          edges: tpl.edges,
+        };
+        store.selectedNode = null;
+        store.currentFlowId = null;
+        store.nodeIdCounter = tpl.nodes.length;
+      } catch (e) {
+        alert('加载模板失败: ' + e.message);
+      }
     },
 
     // ---- Export YAML ----

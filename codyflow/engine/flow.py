@@ -1,17 +1,14 @@
-"""Flow engine - builds and runs LangGraph workflows from YAML definitions."""
+"""Flow engine - builds and runs LangGraph workflows from flow definitions."""
 
 from __future__ import annotations
 
-import json
 import logging
-import re
 import time
 import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-import yaml
 from langgraph.graph import END, StateGraph
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
@@ -21,12 +18,13 @@ import codyflow.nodes.builtin  # noqa: F401  — register built-in nodes
 from codyflow.runners.registry import get_runner
 import codyflow.runners.cody_runner  # noqa: F401
 import codyflow.runners.claude_runner  # noqa: F401
+from codyflow.engine.logger import ExecutionLogger
 
 logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# YAML parsing
+# Data structures
 # ---------------------------------------------------------------------------
 
 @dataclass
@@ -44,63 +42,6 @@ class FlowDefinition:
     max_iterations: int = 5
     nodes: list[NodeConfig] = field(default_factory=list)
     edges: list[EdgeDef] = field(default_factory=list)
-    user_input: str = ""
-    variables: dict[str, str] = field(default_factory=dict)
-
-
-def _substitute_variables(text: str, variables: dict[str, str]) -> str:
-    """Replace {var_name} placeholders with values from variables dict."""
-    def replacer(match):
-        key = match.group(1)
-        return variables.get(key, match.group(0))
-    return re.sub(r"\{(\w+)\}", replacer, text)
-
-
-def parse_flow(yaml_path: str, variables: dict[str, str] | None = None) -> FlowDefinition:
-    """Parse a flow definition from a YAML file with optional variable substitution."""
-    variables = variables or {}
-
-    with open(yaml_path, "r", encoding="utf-8") as f:
-        raw = f.read()
-
-    if variables:
-        raw = _substitute_variables(raw, variables)
-
-    data = yaml.safe_load(raw)
-
-    nodes = []
-    for n in data.get("nodes", []):
-        nodes.append(NodeConfig(
-            id=n["id"],
-            type=n.get("type", "custom"),
-            prompt=n.get("prompt", ""),
-            outputs=n.get("outputs", []),
-            runner=n.get("runner"),
-            max_turns=n.get("max_turns"),
-            interactive=n.get("interactive", False),
-            error_strategy=n.get("error_strategy", "retry"),
-            max_retries=n.get("max_retries", 3),
-            extra=n.get("extra", {}),
-        ))
-
-    edges = []
-    for e in data.get("edges", []):
-        edges.append(EdgeDef(
-            from_node=e["from"],
-            to_node=e["to"],
-            condition=e.get("condition"),
-        ))
-
-    return FlowDefinition(
-        name=data.get("name", "unnamed"),
-        description=data.get("description", ""),
-        runner=data.get("runner", "cody"),
-        max_iterations=data.get("max_iterations", 5),
-        nodes=nodes,
-        edges=edges,
-        user_input=data.get("user_input", ""),
-        variables=variables,
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -140,84 +81,6 @@ def validate_flow(definition: FlowDefinition) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# Execution Logger — writes structured logs to .codyflow/logs/
-# ---------------------------------------------------------------------------
-
-class ExecutionLogger:
-    """Logs all execution details to files for debugging and observability."""
-
-    def __init__(self, logs_dir: str):
-        self.logs_dir = Path(logs_dir)
-        self.logs_dir.mkdir(parents=True, exist_ok=True)
-        self.run_id = str(int(time.time()))
-        self.run_log = self.logs_dir / f"run_{self.run_id}.jsonl"
-
-    def log_event(self, event: dict):
-        """Append a structured event to the run log."""
-        event["timestamp"] = time.time()
-        event["run_id"] = self.run_id
-        with open(self.run_log, "a", encoding="utf-8") as f:
-            f.write(json.dumps(event, ensure_ascii=False) + "\n")
-
-    def log_node_start(self, node_id: str, node_type: str, prompt: str):
-        self.log_event({
-            "event": "node_start",
-            "node_id": node_id,
-            "node_type": node_type,
-            "prompt_length": len(prompt),
-        })
-        # Also save the full prompt to a separate file for debugging
-        prompt_file = self.logs_dir / f"{self.run_id}_{node_id}_prompt.md"
-        prompt_file.write_text(prompt, encoding="utf-8")
-
-    def log_node_complete(self, node_id: str, result: NodeResult, duration: float):
-        self.log_event({
-            "event": "node_complete",
-            "node_id": node_id,
-            "output_length": len(result.output),
-            "output_files": result.output_files,
-            "metadata": result.metadata,
-            "duration_seconds": round(duration, 2),
-        })
-        # Save full output
-        output_file = self.logs_dir / f"{self.run_id}_{node_id}_output.md"
-        output_file.write_text(result.output, encoding="utf-8")
-
-    def log_node_error(self, node_id: str, error: str, attempt: int, tb: str = ""):
-        self.log_event({
-            "event": "node_error",
-            "node_id": node_id,
-            "error": error,
-            "attempt": attempt,
-            "traceback": tb,
-        })
-
-    def log_route_decision(self, node_id: str, route: str, reasoning: str):
-        self.log_event({
-            "event": "route_decision",
-            "node_id": node_id,
-            "route": route,
-            "reasoning": reasoning,
-        })
-
-    def log_flow_start(self, flow_name: str, description: str, node_count: int):
-        self.log_event({
-            "event": "flow_start",
-            "flow_name": flow_name,
-            "description": description,
-            "node_count": node_count,
-        })
-
-    def log_flow_complete(self, completed_nodes: list, iteration: int, total_duration: float):
-        self.log_event({
-            "event": "flow_complete",
-            "completed_nodes": completed_nodes,
-            "iteration": iteration,
-            "total_duration_seconds": round(total_duration, 2),
-        })
-
-
-# ---------------------------------------------------------------------------
 # Flow builder — converts FlowDefinition into a LangGraph StateGraph
 # ---------------------------------------------------------------------------
 
@@ -239,8 +102,8 @@ class Flow:
 
         self.exec_logger = ExecutionLogger(self.logs_dir)
 
-        # Callbacks — all receive rich event dicts now
-        self.on_event: Any = None  # unified event callback
+        # Callbacks
+        self.on_event: Any = None
         self.on_node_start: Any = None
         self.on_node_complete: Any = None
         self.on_flow_complete: Any = None
@@ -269,12 +132,9 @@ class Flow:
         cfg = self.runner_config
         if runner_name == "cody" and "cody" in cfg:
             cody_cfg = cfg["cody"]
-            if cody_cfg.get("api_key"):
-                kwargs["api_key"] = cody_cfg["api_key"]
-            if cody_cfg.get("model"):
-                kwargs["model"] = cody_cfg["model"]
-            if cody_cfg.get("base_url"):
-                kwargs["base_url"] = cody_cfg["base_url"]
+            for key in ("api_key", "model", "base_url"):
+                if cody_cfg.get(key):
+                    kwargs[key] = cody_cfg[key]
         elif runner_name == "claude" and "claude_code" in cfg:
             claude_cfg = cfg["claude_code"]
             if claude_cfg.get("path"):
@@ -298,235 +158,205 @@ class Flow:
             for nc in self.definition.nodes
         ]
 
-    def _make_node_fn(self, node_config: NodeConfig):
+    # ------------------------------------------------------------------
+    # Shared node execution core
+    # ------------------------------------------------------------------
+
+    async def _execute_node_core(
+        self,
+        node_config: NodeConfig,
+        state: FlowState,
+        interactive: bool = False,
+    ) -> FlowState:
+        """Core execution logic shared by regular and interactive nodes."""
         flow = self
+        nid = node_config.id
+        start_time = time.time()
 
-        async def node_fn(state: FlowState) -> FlowState:
-            nid = node_config.id
-            start_time = time.time()
+        # Increment iteration on loop-back
+        iteration = state.get("iteration", 0)
+        if nid in flow._loop_back_targets and nid in state.get("completed_nodes", []):
+            iteration += 1
 
-            # Increment iteration on loop-back
-            iteration = state.get("iteration", 0)
-            if nid in flow._loop_back_targets and nid in state.get("completed_nodes", []):
-                iteration += 1
+        state = {**state, "current_node": nid, "iteration": iteration}
 
-            state = {**state, "current_node": nid, "iteration": iteration}
+        # Build prompt
+        node_cls = get_node_type(node_config.type)
+        node = node_cls(node_config)
+        prompt = node.build_prompt(state)
 
-            # Build prompt first (for logging even on failure)
-            node_cls = get_node_type(node_config.type)
-            node = node_cls(node_config)
-            prompt = node.build_prompt(state)
+        # Emit start event
+        flow._emit({
+            "type": "node_start", "node_id": nid, "node_type": node_config.type,
+            "iteration": iteration,
+            "max_iterations": state.get("max_iterations", 5),
+            "interactive": interactive,
+            "timestamp": time.time(),
+        })
+        if flow.on_node_start:
+            flow.on_node_start(nid, node_config.type)
+        flow.exec_logger.log_node_start(nid, node_config.type, prompt)
 
-            # Emit start event
-            event = {
-                "type": "node_start", "node_id": nid, "node_type": node_config.type,
-                "iteration": iteration,
-                "max_iterations": state.get("max_iterations", 5),
-                "timestamp": time.time(),
-            }
-            flow._emit(event)
-            if flow.on_node_start:
-                flow.on_node_start(nid, node_config.type)
-            flow.exec_logger.log_node_start(nid, node_config.type, prompt)
+        # Get runner config
+        runner_name = node_config.runner or flow.definition.runner
+        kwargs = flow._get_runner_kwargs(runner_name)
+        if node_config.max_turns:
+            kwargs["max_turns"] = node_config.max_turns
 
-            # Get runner
-            runner_name = node_config.runner or flow.definition.runner
-            kwargs = flow._get_runner_kwargs(runner_name)
-            if node_config.max_turns:
-                kwargs["max_turns"] = node_config.max_turns
+        # Execute with error handling + retry
+        retries = 0
+        last_error = None
+        result: NodeResult | None = None
 
-            # Execute with error handling
-            retries = 0
-            last_error = None
-            result: NodeResult | None = None
-
-            while retries <= node_config.max_retries:
-                try:
-                    async with get_runner(runner_name, workdir=flow.workdir, **kwargs) as runner:
-                        result = await node.execute(runner, state)
-                    break
-                except Exception as e:
-                    last_error = str(e)
-                    tb = traceback.format_exc()
-                    flow.exec_logger.log_node_error(nid, last_error, retries + 1, tb)
-                    logger.warning(f"Node {nid} failed (attempt {retries + 1}): {e}")
-
-                    flow._emit({
-                        "type": "node_error", "node_id": nid,
-                        "error": last_error, "attempt": retries + 1,
-                        "timestamp": time.time(),
-                    })
-
-                    if node_config.error_strategy == "fail":
-                        raise
-                    if node_config.error_strategy == "skip":
-                        break
-                    retries += 1
-                    if retries > node_config.max_retries:
-                        raise RuntimeError(
-                            f"Node {nid} failed after {node_config.max_retries} retries: {last_error}"
+        while retries <= node_config.max_retries:
+            try:
+                async with get_runner(runner_name, workdir=flow.workdir, **kwargs) as runner:
+                    if interactive:
+                        result = await self._run_interactive(
+                            node, runner, state, nid, prompt,
                         )
+                    else:
+                        result = await node.execute(runner, state)
+                break
+            except Exception as e:
+                last_error = str(e)
+                tb = traceback.format_exc()
+                flow.exec_logger.log_node_error(nid, last_error, retries + 1, tb)
+                logger.warning(f"Node {nid} failed (attempt {retries + 1}): {e}")
 
-            duration = time.time() - start_time
-            updates: dict[str, Any] = {"iteration": iteration}
-
-            if result:
-                # Write output files
-                if result.output and node_config.outputs:
-                    ctx = Path(flow.context_dir)
-                    for out_file in node_config.outputs:
-                        (ctx / out_file).write_text(result.output, encoding="utf-8")
-                    result.output_files = [str(ctx / f) for f in node_config.outputs]
-
-                completed = list(state.get("completed_nodes", []))
-                if nid not in completed:
-                    completed.append(nid)
-                updates["completed_nodes"] = completed
-
-                if "route" in result.metadata:
-                    updates["route"] = result.metadata["route"]
-
-                # Log and emit complete
-                flow.exec_logger.log_node_complete(nid, result, duration)
-
-                # Rich event with output preview and metadata
-                complete_event = {
-                    "type": "node_complete", "node_id": nid,
-                    "node_type": node_config.type,
-                    "duration": round(duration, 1),
-                    "output_preview": result.output[:300],
-                    "output_length": len(result.output),
-                    "output_files": result.output_files,
-                    "metadata": result.metadata,
+                flow._emit({
+                    "type": "node_error", "node_id": nid,
+                    "error": last_error, "attempt": retries + 1,
                     "timestamp": time.time(),
-                }
+                })
 
-                # If judge, include routing decision
-                if "route" in result.metadata:
-                    reasoning = result.metadata.get("reasoning", "")
-                    complete_event["route"] = result.metadata["route"]
-                    complete_event["reasoning"] = reasoning
-                    flow.exec_logger.log_route_decision(
-                        nid, result.metadata["route"], reasoning
+                if node_config.error_strategy == "fail":
+                    raise
+                if node_config.error_strategy == "skip":
+                    break
+                retries += 1
+                if retries > node_config.max_retries:
+                    raise RuntimeError(
+                        f"Node {nid} failed after {node_config.max_retries} retries: {last_error}"
                     )
 
-                flow._emit(complete_event)
-                if flow.on_node_complete:
-                    flow.on_node_complete(nid, result)
-            else:
-                updates["last_error"] = last_error
-                flow._emit({
-                    "type": "node_skipped", "node_id": nid,
-                    "error": last_error, "timestamp": time.time(),
-                })
+        duration = time.time() - start_time
+        updates: dict[str, Any] = {"iteration": iteration}
 
-            return {**state, **updates}
-
-        return node_fn
-
-    def _make_interactive_node_fn(self, node_config: NodeConfig):
-        flow = self
-
-        async def interactive_fn(state: FlowState) -> FlowState:
-            nid = node_config.id
-            start_time = time.time()
-            state = {**state, "current_node": nid}
-
-            flow._emit({
-                "type": "node_start", "node_id": nid,
-                "node_type": node_config.type, "interactive": True,
-                "timestamp": time.time(),
-            })
-            if flow.on_node_start:
-                flow.on_node_start(nid, node_config.type)
-
-            runner_name = node_config.runner or flow.definition.runner
-            kwargs = flow._get_runner_kwargs(runner_name)
-            if node_config.max_turns:
-                kwargs["max_turns"] = node_config.max_turns
-
-            node_cls = get_node_type(node_config.type)
-            node = node_cls(node_config)
-            prompt = node.build_prompt(state)
-            flow.exec_logger.log_node_start(nid, node_config.type, prompt)
-
-            session_id = None
-            final_output = ""
-            turn_count = 0
-
-            async with get_runner(runner_name, workdir=flow.workdir, **kwargs) as runner:
-                result = await runner.run(prompt)
-                session_id = result.session_id
-                final_output = result.output
-                turn_count = 1
-
-                flow._emit({
-                    "type": "interactive_turn", "node_id": nid,
-                    "turn": turn_count, "role": "assistant",
-                    "output_preview": result.output[:300],
-                    "timestamp": time.time(),
-                })
-
-                while True:
-                    if not flow.on_interactive_input:
-                        break
-                    user_msg = await flow.on_interactive_input(nid, result.output)
-                    if not user_msg or user_msg.strip().lower() in (
-                        "done", "结束", "ok", "完成", "exit", "quit"
-                    ):
-                        break
-
-                    turn_count += 1
-                    flow._emit({
-                        "type": "interactive_turn", "node_id": nid,
-                        "turn": turn_count, "role": "user",
-                        "timestamp": time.time(),
-                    })
-
-                    result = await runner.run(user_msg, session_id=session_id)
-                    session_id = result.session_id
-                    final_output = result.output
-
-                    turn_count += 1
-                    flow._emit({
-                        "type": "interactive_turn", "node_id": nid,
-                        "turn": turn_count, "role": "assistant",
-                        "output_preview": result.output[:300],
-                        "timestamp": time.time(),
-                    })
-
-            # Save final output
-            if final_output and node_config.outputs:
+        if result:
+            # Write output files
+            if result.output and node_config.outputs:
                 ctx = Path(flow.context_dir)
                 for out_file in node_config.outputs:
-                    (ctx / out_file).write_text(final_output, encoding="utf-8")
+                    (ctx / out_file).write_text(result.output, encoding="utf-8")
+                result.output_files = [str(ctx / f) for f in node_config.outputs]
 
             completed = list(state.get("completed_nodes", []))
             if nid not in completed:
                 completed.append(nid)
+            updates["completed_nodes"] = completed
 
-            duration = time.time() - start_time
-            node_result = NodeResult(
-                node_id=nid, output=final_output,
-                output_files=node_config.outputs,
-                metadata={"turns": turn_count},
-            )
-            flow.exec_logger.log_node_complete(nid, node_result, duration)
+            if "route" in result.metadata:
+                updates["route"] = result.metadata["route"]
 
-            flow._emit({
+            # Log and emit
+            flow.exec_logger.log_node_complete(nid, result, duration)
+
+            complete_event: dict[str, Any] = {
                 "type": "node_complete", "node_id": nid,
                 "node_type": node_config.type,
                 "duration": round(duration, 1),
-                "turns": turn_count,
-                "output_preview": final_output[:300],
+                "output_preview": result.output[:300],
+                "output_length": len(result.output),
+                "output_files": result.output_files,
+                "metadata": result.metadata,
+                "timestamp": time.time(),
+            }
+
+            if "route" in result.metadata:
+                reasoning = result.metadata.get("reasoning", "")
+                complete_event["route"] = result.metadata["route"]
+                complete_event["reasoning"] = reasoning
+                flow.exec_logger.log_route_decision(
+                    nid, result.metadata["route"], reasoning
+                )
+
+            if interactive and "turns" in result.metadata:
+                complete_event["turns"] = result.metadata["turns"]
+
+            flow._emit(complete_event)
+            if flow.on_node_complete:
+                flow.on_node_complete(nid, result)
+        else:
+            updates["last_error"] = last_error
+            flow._emit({
+                "type": "node_skipped", "node_id": nid,
+                "error": last_error, "timestamp": time.time(),
+            })
+
+        return {**state, **updates}
+
+    async def _run_interactive(
+        self, node, runner, state: FlowState, nid: str, prompt: str,
+    ) -> NodeResult:
+        """Run an interactive multi-turn node."""
+        result = await runner.run(prompt)
+        session_id = result.session_id
+        final_output = result.output
+        turn_count = 1
+
+        self._emit({
+            "type": "interactive_turn", "node_id": nid,
+            "turn": turn_count, "role": "assistant",
+            "output_preview": result.output[:300],
+            "timestamp": time.time(),
+        })
+
+        while self.on_interactive_input:
+            user_msg = await self.on_interactive_input(nid, result.output)
+            if not user_msg or user_msg.strip().lower() in (
+                "done", "结束", "ok", "完成", "exit", "quit"
+            ):
+                break
+
+            turn_count += 1
+            self._emit({
+                "type": "interactive_turn", "node_id": nid,
+                "turn": turn_count, "role": "user",
                 "timestamp": time.time(),
             })
-            if flow.on_node_complete:
-                flow.on_node_complete(nid, node_result)
 
-            return {**state, "completed_nodes": completed}
+            result = await runner.run(user_msg, session_id=session_id)
+            session_id = result.session_id
+            final_output = result.output
 
-        return interactive_fn
+            turn_count += 1
+            self._emit({
+                "type": "interactive_turn", "node_id": nid,
+                "turn": turn_count, "role": "assistant",
+                "output_preview": result.output[:300],
+                "timestamp": time.time(),
+            })
+
+        return NodeResult(
+            node_id=nid, output=final_output,
+            output_files=node.config.outputs,
+            metadata={"turns": turn_count},
+        )
+
+    # ------------------------------------------------------------------
+    # Graph building
+    # ------------------------------------------------------------------
+
+    def _make_node_fn(self, node_config: NodeConfig):
+        flow = self
+
+        async def node_fn(state: FlowState) -> FlowState:
+            return await flow._execute_node_core(
+                node_config, state, interactive=node_config.interactive,
+            )
+
+        return node_fn
 
     def _find_start_node(self) -> str:
         targets = {e.to_node for e in self.definition.edges}
@@ -539,10 +369,7 @@ class Flow:
         graph = StateGraph(FlowState)
 
         for nc in self.definition.nodes:
-            if nc.interactive:
-                graph.add_node(nc.id, self._make_interactive_node_fn(nc))
-            else:
-                graph.add_node(nc.id, self._make_node_fn(nc))
+            graph.add_node(nc.id, self._make_node_fn(nc))
 
         start = self._find_start_node()
         graph.set_entry_point(start)
@@ -587,6 +414,10 @@ class Flow:
 
         return graph
 
+    # ------------------------------------------------------------------
+    # Run
+    # ------------------------------------------------------------------
+
     async def run(self, user_input: str = "") -> dict[str, Any]:
         """Execute the flow."""
         flow_start_time = time.time()
@@ -597,7 +428,7 @@ class Flow:
             for err in errors:
                 logger.warning(f"Flow validation: {err}")
 
-        input_text = user_input or self.definition.user_input
+        input_text = user_input
         if input_text:
             Path(self.context_dir, "user_input.md").write_text(input_text, encoding="utf-8")
 

@@ -11,7 +11,20 @@ from codyflow.nodes.registry import register_node_type
 logger = logging.getLogger(__name__)
 
 
-class DiscussNode(Node):
+class SimpleNode(Node):
+    """Base for nodes with identical execute logic (build prompt → run → return result)."""
+
+    async def execute(self, runner, state: FlowState) -> NodeResult:
+        prompt = self.build_prompt(state)
+        result = await runner.run(prompt)
+        return NodeResult(
+            node_id=self.config.id,
+            output=result.output,
+            output_files=self.config.outputs,
+        )
+
+
+class DiscussNode(SimpleNode):
     """Discussion node - interactive multi-turn analysis with user.
 
     This node defaults to interactive mode. The flow engine handles
@@ -26,7 +39,6 @@ class DiscussNode(Node):
         "与用户进行多轮对话，直到用户确认讨论结束。\n"
         "最终产出一份清晰的讨论结论文档。"
     )
-    default_interactive = True
 
     def __init__(self, config: NodeConfig):
         super().__init__(config)
@@ -34,18 +46,8 @@ class DiscussNode(Node):
         if not config.extra.get("_interactive_explicit"):
             config.interactive = True
 
-    async def execute(self, runner, state: FlowState) -> NodeResult:
-        prompt = self.build_prompt(state)
-        result = await runner.run(prompt)
-        return NodeResult(
-            node_id=self.config.id,
-            output=result.output,
-            output_files=self.config.outputs,
-            metadata={"session_id": result.session_id},
-        )
 
-
-class LearnNode(Node):
+class LearnNode(SimpleNode):
     """Learning node - studies the project codebase and tech stack."""
 
     node_type = "learn"
@@ -56,17 +58,8 @@ class LearnNode(Node):
         "产出一份项目知识摘要文档。"
     )
 
-    async def execute(self, runner, state: FlowState) -> NodeResult:
-        prompt = self.build_prompt(state)
-        result = await runner.run(prompt)
-        return NodeResult(
-            node_id=self.config.id,
-            output=result.output,
-            output_files=self.config.outputs,
-        )
 
-
-class CodeNode(Node):
+class CodeNode(SimpleNode):
     """Coding node - writes or modifies code based on context."""
 
     node_type = "code"
@@ -78,17 +71,8 @@ class CodeNode(Node):
         "完成后，产出一份代码变更总结文档。"
     )
 
-    async def execute(self, runner, state: FlowState) -> NodeResult:
-        prompt = self.build_prompt(state)
-        result = await runner.run(prompt)
-        return NodeResult(
-            node_id=self.config.id,
-            output=result.output,
-            output_files=self.config.outputs,
-        )
 
-
-class ReflectNode(Node):
+class ReflectNode(SimpleNode):
     """Reflection node - reviews work and identifies issues."""
 
     node_type = "reflect"
@@ -243,7 +227,7 @@ class JudgeNode(Node):
         return raw
 
 
-class CustomNode(Node):
+class CustomNode(SimpleNode):
     """Custom node - user-defined behavior via prompt.
 
     Can be used to create any kind of node: pause, user-input,
@@ -260,13 +244,7 @@ class CustomNode(Node):
                 f"Custom node '{self.config.id}' has no prompt — "
                 f"executing with empty task"
             )
-        prompt = self.build_prompt(state)
-        result = await runner.run(prompt)
-        return NodeResult(
-            node_id=self.config.id,
-            output=result.output,
-            output_files=self.config.outputs,
-        )
+        return await super().execute(runner, state)
 
 
 # Register all built-in node types
