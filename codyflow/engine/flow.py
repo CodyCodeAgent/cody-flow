@@ -72,6 +72,13 @@ def validate_flow(definition: FlowDefinition) -> list[str]:
         conditions = [e.condition for e in edges if e.condition]
         if len(conditions) != len(set(conditions)):
             errors.append(f"Node '{source}' has duplicate edge conditions: {conditions}")
+        unconditional = [e for e in edges if not e.condition]
+        if len(unconditional) > 1:
+            targets = [e.to_node for e in unconditional]
+            errors.append(
+                f"Node '{source}' has {len(unconditional)} unconditional edges "
+                f"(→ {', '.join(targets)}); only one is allowed"
+            )
 
     for n in definition.nodes:
         if n.type == "custom" and not n.prompt:
@@ -403,9 +410,13 @@ class Flow:
 
                 graph.add_conditional_edges(source, make_router(route_map))
             else:
-                if len(edges) == 1:
-                    target = END if edges[0].to_node == "END" else edges[0].to_node
-                    graph.add_edge(source, target)
+                if len(edges) > 1:
+                    logger.warning(
+                        f"Node '{source}' has {len(edges)} unconditional edges; "
+                        f"only the first (→ {edges[0].to_node}) will be used"
+                    )
+                target = END if edges[0].to_node == "END" else edges[0].to_node
+                graph.add_edge(source, target)
 
         sources_with_edges = set(edges_by_source.keys())
         for nc in self.definition.nodes:

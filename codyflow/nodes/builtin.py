@@ -88,15 +88,6 @@ class ReflectNode(SimpleNode):
         "产出一份详细的反思报告，明确列出发现的问题和改进建议。"
     )
 
-    async def execute(self, runner, state: FlowState) -> NodeResult:
-        prompt = self.build_prompt(state)
-        result = await runner.run(prompt)
-        return NodeResult(
-            node_id=self.config.id,
-            output=result.output,
-            output_files=self.config.outputs,
-        )
-
 
 class JudgeNode(Node):
     """Judge node - decides routing based on upstream output.

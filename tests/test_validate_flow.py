@@ -79,6 +79,19 @@ class TestValidateFlow:
         # Should not complain about prompt
         assert not any("no prompt" in e for e in errors)
 
+    def test_multiple_unconditional_edges(self):
+        nodes = [
+            NodeConfig(id="a", type="code"),
+            NodeConfig(id="b", type="code"),
+            NodeConfig(id="c", type="code"),
+        ]
+        edges = [
+            EdgeDef(from_node="a", to_node="b"),
+            EdgeDef(from_node="a", to_node="c"),
+        ]
+        errors = validate_flow(_make_flow(nodes, edges))
+        assert any("unconditional edges" in e for e in errors)
+
     def test_empty_flow(self):
         errors = validate_flow(_make_flow())
         # No nodes, no edges — no start node error
