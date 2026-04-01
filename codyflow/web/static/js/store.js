@@ -75,6 +75,16 @@ const store = Vue.reactive({
   selectedContextFile: null,
   contextFileContent: '',
 
+  // Template dialog
+  showTemplateDialog: false,
+  templates: [],
+
+  // Interactive node chat
+  interactiveWaiting: false,
+  interactiveNodeId: '',
+  interactiveOutput: '',
+  interactiveInput: '',
+
   // Canvas zoom/pan
   canvasScale: 1,
   canvasOffsetX: 0,
@@ -84,18 +94,17 @@ const store = Vue.reactive({
   config: {
     cody: {
       api_key: '',
-      model: 'claude-sonnet-4-20250514',
+      model: 'claude-sonnet-4-6',
       base_url: '',
     },
     claude_code: {
       installed: false,
       path: '',
-      model: 'claude-sonnet-4-20250514',
+      model: 'claude-sonnet-4-6',
     },
     general: {
       default_runner: 'cody',
       workdir: '.',
-      language: 'zh-CN',
     },
   },
 

@@ -246,6 +246,19 @@ const FlowCanvas = {
         <p>从左侧拖拽节点到画布，或双击添加</p>
       </div>
 
+      <!-- Canvas help hints -->
+      <div class="canvas-hints" v-show="nodes.length > 0">
+        <span>拖拽底部圆点连线</span>
+        <span>·</span>
+        <span>单击连线设置条件</span>
+        <span>·</span>
+        <span>双击连线删除</span>
+        <span>·</span>
+        <span>Ctrl+拖拽平移</span>
+        <span>·</span>
+        <span>滚轮缩放</span>
+      </div>
+
       <!-- Zoom controls -->
       <div class="zoom-controls">
         <button class="btn btn-outline btn-sm" @click="$emit('updateTransform', {scale: Math.min(2, (scale||1)+0.1)})">+</button>

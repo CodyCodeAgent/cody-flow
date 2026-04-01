@@ -285,6 +285,29 @@ body{
 }
 .events-log .event.route{color:var(--cyan)}
 
+/* ---- Canvas Hints ---- */
+.canvas-hints{
+  position:absolute;bottom:32px;left:50%;transform:translateX(-50%);z-index:5;
+  display:flex;align-items:center;gap:6px;
+  background:var(--surface);border:1px solid var(--border);
+  border-radius:8px;padding:4px 12px;
+  font-size:10px;color:var(--text2);white-space:nowrap;opacity:.7;
+  transition:opacity .2s;
+}
+.canvas-hints:hover{opacity:1}
+
+/* ---- Interactive Chat Modal ---- */
+.interactive-overlay{z-index:200}
+.interactive-modal{width:700px}
+.interactive-output{
+  max-height:300px;overflow-y:auto;margin-bottom:12px;
+}
+.interactive-output pre{
+  background:var(--surface2);padding:12px;border-radius:8px;
+  font-size:12px;color:var(--text);white-space:pre-wrap;word-break:break-word;
+  line-height:1.5;
+}
+
 /* ---- Utilities ---- */
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
 ::-webkit-scrollbar{width:5px}

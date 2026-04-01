@@ -10,6 +10,7 @@ const app = createApp({
       currentPage: 'editor',
       store,
       sseSource: null,
+      wsConn: null,
       pollTimer: null,
       showYamlModal: false,
       yamlContent: '',
@@ -183,25 +184,17 @@ const app = createApp({
     async loadTemplate() {
       try {
         const data = await API.listTemplates();
-        if (!data.templates || data.templates.length === 0) {
-          alert('没有可用的模板');
-          return;
-        }
+        store.templates = data.templates || [];
+        store.showTemplateDialog = true;
+      } catch (e) {
+        alert('加载模板失败: ' + e.message);
+      }
+    },
 
-        // Build selection prompt
-        const choices = data.templates.map((t, i) => `${i + 1}. ${t.name} (${t.node_count} 节点)`).join('\n');
-        const choice = prompt('选择模板:\n' + choices + '\n\n输入编号:', '1');
-        if (!choice) return;
-
-        const idx = parseInt(choice, 10) - 1;
-        if (idx < 0 || idx >= data.templates.length) {
-          alert('无效的选择');
-          return;
-        }
-
-        if (store.flow.nodes.length > 0 && !confirm('加载模板将覆盖当前编辑内容，继续吗？')) return;
-
-        const tpl = await API.getTemplate(data.templates[idx].filename);
+    async doLoadTemplate(filename) {
+      if (store.flow.nodes.length > 0 && !confirm('加载模板将覆盖当前编辑内容，继续吗？')) return;
+      try {
+        const tpl = await API.getTemplate(filename);
         store.flow = {
           name: tpl.name,
           description: tpl.description,
@@ -213,6 +206,7 @@ const app = createApp({
         store.selectedNode = null;
         store.currentFlowId = null;
         store.nodeIdCounter = tpl.nodes.length;
+        store.showTemplateDialog = false;
       } catch (e) {
         alert('加载模板失败: ' + e.message);
       }
@@ -284,7 +278,7 @@ const app = createApp({
       try {
         const payload = this._buildFlowPayload();
         await API.runFlow(payload, store.runWorkdir, store.runUserInput);
-        this.connectSSE();
+        this.connectWS();
       } catch (e) {
         store.runStatus = 'failed';
         store.runEvents.push({ type: 'error', text: '启动失败: ' + e.message });
@@ -308,18 +302,25 @@ const app = createApp({
       };
     },
 
-    // ---- SSE connection ----
-    connectSSE() {
-      if (this.sseSource) this.sseSource.close();
-      this.sseSource = API.connectSSE();
+    // ---- WebSocket connection ----
+    connectWS() {
+      this.disconnectSSE();
+      const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      this.wsConn = new WebSocket(`${proto}//${location.host}/ws/flow`);
 
-      this.sseSource.onmessage = (event) => {
-        try { this.handleFlowEvent(JSON.parse(event.data)); } catch (e) {}
+      this.wsConn.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.type !== 'keepalive') this.handleFlowEvent(data);
+        } catch (e) {}
       };
 
-      this.sseSource.onerror = () => {
-        if (this.sseSource) { this.sseSource.close(); this.sseSource = null; }
+      this.wsConn.onerror = () => {
         if (store.runStatus === 'running') this.startPolling();
+      };
+
+      this.wsConn.onclose = () => {
+        this.wsConn = null;
       };
     },
 
@@ -361,6 +362,13 @@ const app = createApp({
         store.runEvents.push({ type: 'node_start', time, text: `💬 ${ev.node_id} 轮次 ${ev.turn} (${ev.role})` });
       } else if (ev.type === 'node_skipped') {
         store.runEvents.push({ type: 'error', time, text: `⊘ ${ev.node_id} 已跳过`, detail: ev.error });
+      } else if (ev.type === 'interactive_wait') {
+        // Interactive node is waiting for user input — show chat UI
+        store.interactiveWaiting = true;
+        store.interactiveNodeId = ev.node_id;
+        store.interactiveOutput = ev.output || '';
+        store.interactiveInput = '';
+        store.runEvents.push({ type: 'node_start', time, text: `💬 ${ev.node_id} 等待你的回复...` });
       }
 
       this.$nextTick(() => {
@@ -369,8 +377,29 @@ const app = createApp({
       });
     },
 
+    // ---- Interactive chat ----
+    sendInteractiveMessage(forceMsg) {
+      const msg = forceMsg || store.interactiveInput.trim();
+      if (!msg) return;
+
+      if (this.wsConn && this.wsConn.readyState === WebSocket.OPEN) {
+        this.wsConn.send(JSON.stringify({ type: 'interactive_input', message: msg }));
+      }
+
+      const time = new Date().toLocaleTimeString();
+      if (msg === 'done') {
+        store.runEvents.push({ type: 'node_complete', time, text: `💬 ${store.interactiveNodeId} 对话结束` });
+      } else {
+        store.runEvents.push({ type: 'node_start', time, text: `💬 你: ${msg.substring(0, 80)}${msg.length > 80 ? '...' : ''}` });
+      }
+
+      store.interactiveWaiting = false;
+      store.interactiveInput = '';
+    },
+
     disconnectSSE() {
       if (this.sseSource) { this.sseSource.close(); this.sseSource = null; }
+      if (this.wsConn) { this.wsConn.close(); this.wsConn = null; }
       if (this.pollTimer) { clearInterval(this.pollTimer); this.pollTimer = null; }
     },
 

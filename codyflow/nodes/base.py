@@ -94,6 +94,8 @@ class Node(abc.ABC):
         sections.append(f"名称：{state['flow_name']}")
         if state.get("flow_description"):
             sections.append(f"目标：{state['flow_description']}")
+        if state.get("user_message"):
+            sections.append(f"\n## 用户需求\n{state['user_message']}")
 
         # Section 2: Node map with status
         sections.append("\n## 节点流程")

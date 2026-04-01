@@ -96,11 +96,17 @@
       <h3>运行 Flow</h3>
       <div class="form-group">
         <label>工作目录</label>
-        <input v-model="store.runWorkdir" placeholder="项目根目录路径">
+        <input v-model="store.runWorkdir" placeholder="项目根目录的绝对路径">
+        <span style="font-size:11px;color:var(--text2);margin-top:2px;display:block">
+          AI 将在此目录中读写代码。请输入项目根目录的绝对路径，如 /home/user/my-project
+        </span>
       </div>
       <div class="form-group">
         <label>任务描述 / 需求</label>
-        <textarea rows="4" v-model="store.runUserInput" placeholder="描述你希望 AI 完成的任务..."></textarea>
+        <textarea rows="4" v-model="store.runUserInput" placeholder="描述你希望 AI 完成的任务...&#10;&#10;例如：实现用户登录功能，包含邮箱验证和 JWT token"></textarea>
+        <span style="font-size:11px;color:var(--text2);margin-top:2px;display:block">
+          此内容会注入到每个节点的 prompt 中，确保所有 AI 节点理解你的需求
+        </span>
       </div>
       <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
         <button class="btn btn-outline btn-sm" @click="closeRunDialog">取消</button>
@@ -120,6 +126,45 @@
       <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">
         <button class="btn btn-outline btn-sm" @click="store.showImportDialog=false">取消</button>
         <button class="btn btn-primary btn-sm" @click="doImportYaml">导入</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Template Selection Modal -->
+  <div class="modal-overlay" v-if="store.showTemplateDialog" @click.self="store.showTemplateDialog=false">
+    <div class="modal">
+      <h3>选择模板</h3>
+      <p v-if="store.templates.length === 0" style="color:var(--text2);padding:16px 0;text-align:center">
+        没有可用的模板
+      </p>
+      <div v-else class="flow-list">
+        <div v-for="t in store.templates" :key="t.filename" class="flow-list-item" @click="doLoadTemplate(t.filename)">
+          <div class="flow-list-name">{{ t.name }}</div>
+          <div class="flow-list-meta">
+            {{ t.description || '无描述' }}
+            <span class="flow-list-info">{{ t.node_count }} 个节点</span>
+          </div>
+        </div>
+      </div>
+      <div style="display:flex;justify-content:flex-end;margin-top:12px">
+        <button class="btn btn-outline btn-sm" @click="store.showTemplateDialog=false">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Interactive Chat Modal -->
+  <div class="modal-overlay interactive-overlay" v-if="store.interactiveWaiting" @click.self="">
+    <div class="modal interactive-modal">
+      <h3>💬 交互式对话 — {{ store.interactiveNodeId }}</h3>
+      <div class="interactive-output">
+        <pre>{{ store.interactiveOutput }}</pre>
+      </div>
+      <div class="form-group">
+        <textarea rows="3" v-model="store.interactiveInput" placeholder="输入你的回复..." @keydown.ctrl.enter="sendInteractiveMessage" @keydown.meta.enter="sendInteractiveMessage"></textarea>
+      </div>
+      <div style="display:flex;gap:8px;justify-content:flex-end">
+        <button class="btn btn-outline btn-sm" @click="sendInteractiveMessage('done')">结束对话</button>
+        <button class="btn btn-primary btn-sm" @click="sendInteractiveMessage()">发送 (Ctrl+Enter)</button>
       </div>
     </div>
   </div>

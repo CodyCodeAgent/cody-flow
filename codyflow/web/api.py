@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -48,6 +48,8 @@ _current_flow: Flow | None = None
 _flow_task: asyncio.Task | None = None
 _flow_events: list[dict[str, Any]] = []
 _event_queue: asyncio.Queue | None = None
+_interactive_input_queue: asyncio.Queue | None = None
+_active_ws: WebSocket | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -319,13 +321,14 @@ async def api_import_yaml(req: ImportYamlRequest):
 
 @app.post("/api/flow/run")
 async def api_run_flow(req: RunRequest):
-    global _current_flow, _flow_task, _flow_events, _event_queue
+    global _current_flow, _flow_task, _flow_events, _event_queue, _interactive_input_queue
 
     if _flow_task and not _flow_task.done():
         raise HTTPException(409, "A flow is already running")
 
     _flow_events = []
     _event_queue = asyncio.Queue()
+    _interactive_input_queue = asyncio.Queue()
     definition = _model_to_definition(req.flow)
     workdir = str(Path(req.workdir).resolve())
 
@@ -337,10 +340,27 @@ async def api_run_flow(req: RunRequest):
         if _event_queue:
             _event_queue.put_nowait(event)
 
+    async def on_interactive_input(node_id: str, assistant_output: str) -> str:
+        """Called by engine when an interactive node needs user input.
+
+        Emits a 'interactive_wait' event so the frontend shows a chat input,
+        then blocks until the user sends a message via WebSocket.
+        """
+        on_event({
+            "type": "interactive_wait",
+            "node_id": node_id,
+            "output": assistant_output,
+            "timestamp": time.time(),
+        })
+        # Block until user sends a message
+        user_msg = await _interactive_input_queue.get()
+        return user_msg
+
     _current_flow.on_event = on_event
     _current_flow.on_node_start = lambda nid, ntype: None
     _current_flow.on_node_complete = lambda nid, result: None
     _current_flow.on_flow_complete = lambda state: None
+    _current_flow.on_interactive_input = on_interactive_input
 
     _flow_task = asyncio.create_task(_current_flow.run(req.user_input))
     return {"status": "started"}
@@ -399,6 +419,72 @@ async def api_flow_events_sse():
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@app.websocket("/ws/flow")
+async def ws_flow(ws: WebSocket):
+    """WebSocket endpoint for bidirectional flow communication.
+
+    Server → Client: flow events (same as SSE)
+    Client → Server: interactive node user input (JSON: {"type": "interactive_input", "message": "..."})
+    """
+    global _active_ws
+    await ws.accept()
+    _active_ws = ws
+
+    try:
+        # Send already-collected events
+        for ev in list(_flow_events):
+            await ws.send_json(ev)
+
+        # Drain queue of events we already sent
+        if _event_queue:
+            drained = 0
+            sent_count = len(_flow_events)
+            while not _event_queue.empty() and drained < sent_count:
+                try:
+                    _event_queue.get_nowait()
+                    drained += 1
+                except asyncio.QueueEmpty:
+                    break
+
+        async def send_events():
+            """Forward engine events to WebSocket."""
+            if not _event_queue:
+                return
+            while True:
+                try:
+                    event = await asyncio.wait_for(_event_queue.get(), timeout=30.0)
+                    await ws.send_json(event)
+                    if event.get("type") in ("flow_complete", "flow_stopped"):
+                        break
+                except asyncio.TimeoutError:
+                    await ws.send_json({"type": "keepalive"})
+                except Exception:
+                    break
+
+        async def recv_messages():
+            """Receive user messages and route to interactive input queue."""
+            while True:
+                try:
+                    data = await ws.receive_json()
+                    if data.get("type") == "interactive_input" and _interactive_input_queue:
+                        _interactive_input_queue.put_nowait(data.get("message", ""))
+                    elif data.get("type") == "stop":
+                        if _flow_task and not _flow_task.done():
+                            _flow_task.cancel()
+                            if _event_queue:
+                                _event_queue.put_nowait({"type": "flow_stopped", "timestamp": time.time()})
+                except (WebSocketDisconnect, Exception):
+                    break
+
+        # Run send and receive concurrently
+        await asyncio.gather(send_events(), recv_messages(), return_exceptions=True)
+
+    except WebSocketDisconnect:
+        pass
+    finally:
+        _active_ws = None
 
 
 @app.post("/api/flow/stop")

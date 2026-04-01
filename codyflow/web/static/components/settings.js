@@ -12,8 +12,8 @@ const SettingsPage = {
       checking: false,
       showApiKey: false,
       models: [
-        { value: 'claude-sonnet-4-20250514', label: 'Claude Sonnet 4' },
-        { value: 'claude-opus-4-20250514', label: 'Claude Opus 4' },
+        { value: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
+        { value: 'claude-opus-4-6', label: 'Claude Opus 4.6' },
         { value: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5' },
         { value: 'gpt-4o', label: 'GPT-4o' },
         { value: 'deepseek-chat', label: 'DeepSeek' },
@@ -146,13 +146,7 @@ const SettingsPage = {
         <div class="form-group">
           <label>默认工作目录</label>
           <input v-model="config.general.workdir" placeholder=".">
-        </div>
-        <div class="form-group">
-          <label>界面语言</label>
-          <select v-model="config.general.language">
-            <option value="zh-CN">中文</option>
-            <option value="en">English</option>
-          </select>
+          <span style="font-size:11px;color:var(--text2)">运行 Flow 时 AI 操作的项目目录路径</span>
         </div>
       </div>
 

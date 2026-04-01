@@ -459,6 +459,7 @@ class Flow:
         initial_state: FlowState = {
             "flow_name": self.definition.name,
             "flow_description": self.definition.description or input_text,
+            "user_message": input_text,
             "workdir": self.workdir,
             "context_dir": self.context_dir,
             "node_map": self._build_node_map(),
@@ -469,7 +470,6 @@ class Flow:
             "route": "",
             "last_error": None,
             "waiting_for_user": False,
-            "user_message": "",
         }
 
         graph = self._build_graph()
