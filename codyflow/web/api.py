@@ -5,8 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import shutil
-import subprocess
 import sys
 import time
 from pathlib import Path
@@ -20,10 +18,11 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.responses import StreamingResponse
 
-from codyflow.engine.flow import Flow, FlowDefinition, parse_flow, validate_flow, EdgeDef
+from codyflow.engine.flow import Flow, FlowDefinition, validate_flow, EdgeDef
 from codyflow.nodes.base import NodeConfig
 from codyflow.nodes.registry import list_node_types
 from codyflow.runners.registry import list_runners
+from codyflow.storage import FlowStorage
 
 logger = logging.getLogger(__name__)
 
@@ -40,12 +39,15 @@ app.add_middleware(
 _web_dir = Path(__file__).parent
 app.mount("/static", StaticFiles(directory=str(_web_dir / "static")), name="static")
 
-# In-memory state
+# Singletons
+_storage = FlowStorage()
+_config_path = Path.home() / ".codyflow" / "config.json"
+
+# In-memory run state
 _current_flow: Flow | None = None
 _flow_task: asyncio.Task | None = None
 _flow_events: list[dict[str, Any]] = []
 _event_queue: asyncio.Queue | None = None
-_config_path = Path.home() / ".codyflow" / "config.json"
 
 
 # ---------------------------------------------------------------------------
@@ -80,6 +82,11 @@ class FlowModel(BaseModel):
     edges: list[EdgeModel] = []
 
 
+class SaveFlowRequest(BaseModel):
+    flow: FlowModel
+    flow_id: int | None = None  # None = create new, int = update existing
+
+
 class RunRequest(BaseModel):
     flow: FlowModel
     workdir: str = "."
@@ -92,13 +99,79 @@ class RunRequest(BaseModel):
 
 @app.get("/", response_class=HTMLResponse)
 async def index():
-    """Serve the main web UI."""
     html_path = _web_dir / "templates" / "index.html"
     return HTMLResponse(html_path.read_text(encoding="utf-8"))
 
 
 # ---------------------------------------------------------------------------
-# Flow API
+# Flow CRUD (SQLite)
+# ---------------------------------------------------------------------------
+
+@app.get("/api/flows")
+async def api_list_flows():
+    """List all saved flows."""
+    flows = _storage.list_flows()
+    return {
+        "flows": [
+            {
+                "id": f.id,
+                "name": f.name,
+                "description": f.description,
+                "node_count": len(f.definition.get("nodes", [])),
+                "created_at": f.created_at,
+                "updated_at": f.updated_at,
+            }
+            for f in flows
+        ]
+    }
+
+
+@app.get("/api/flows/{flow_id}")
+async def api_get_flow(flow_id: int):
+    """Load a saved flow by ID."""
+    flow = _storage.get_flow(flow_id)
+    if not flow:
+        raise HTTPException(404, f"Flow not found: {flow_id}")
+    return {
+        "id": flow.id,
+        "name": flow.name,
+        "description": flow.description,
+        "definition": flow.definition,
+        "created_at": flow.created_at,
+        "updated_at": flow.updated_at,
+    }
+
+
+@app.post("/api/flows/save")
+async def api_save_flow(req: SaveFlowRequest):
+    """Save a flow to SQLite. Creates new if flow_id is None, updates otherwise."""
+    definition = {
+        "name": req.flow.name,
+        "description": req.flow.description,
+        "runner": req.flow.runner,
+        "max_iterations": req.flow.max_iterations,
+        "nodes": [n.model_dump() for n in req.flow.nodes],
+        "edges": [e.model_dump() for e in req.flow.edges],
+    }
+    flow_id = _storage.save_flow(
+        name=req.flow.name,
+        description=req.flow.description,
+        definition=definition,
+        flow_id=req.flow_id,
+    )
+    return {"id": flow_id, "status": "saved"}
+
+
+@app.delete("/api/flows/{flow_id}")
+async def api_delete_flow(flow_id: int):
+    """Delete a saved flow."""
+    if not _storage.delete_flow(flow_id):
+        raise HTTPException(404, f"Flow not found: {flow_id}")
+    return {"status": "deleted"}
+
+
+# ---------------------------------------------------------------------------
+# Flow operations
 # ---------------------------------------------------------------------------
 
 @app.get("/api/node-types")
@@ -118,22 +191,61 @@ async def api_validate(flow: FlowModel):
     return {"valid": len(errors) == 0, "errors": errors}
 
 
-@app.post("/api/flow/save")
-async def api_save_flow(flow: FlowModel, path: str = "flow.yaml"):
+@app.post("/api/flow/export-yaml")
+async def api_export_yaml(flow: FlowModel):
+    """Export flow as YAML string for sharing."""
     data = _model_to_yaml_dict(flow)
-    Path(path).write_text(
-        yaml.dump(data, allow_unicode=True, default_flow_style=False, sort_keys=False),
-        encoding="utf-8",
-    )
-    return {"saved": path}
+    yaml_str = yaml.dump(data, allow_unicode=True, default_flow_style=False, sort_keys=False)
+    return {"yaml": yaml_str}
 
 
-@app.post("/api/flow/load")
-async def api_load_flow(path: str = "flow.yaml"):
-    if not Path(path).exists():
-        raise HTTPException(404, f"File not found: {path}")
-    definition = parse_flow(path)
-    return _definition_to_model(definition)
+class ImportYamlRequest(BaseModel):
+    yaml_content: str
+
+
+@app.post("/api/flow/import-yaml")
+async def api_import_yaml(req: ImportYamlRequest):
+    """Import a flow from YAML content. Returns parsed flow definition."""
+    try:
+        data = yaml.safe_load(req.yaml_content)
+    except yaml.YAMLError as e:
+        raise HTTPException(400, f"YAML 解析错误: {e}")
+
+    if not isinstance(data, dict):
+        raise HTTPException(400, "无效的 YAML 格式")
+
+    # Parse into standardized format with default UI positions
+    nodes = []
+    for i, n in enumerate(data.get("nodes", [])):
+        nodes.append({
+            "id": n.get("id", f"node_{i}"),
+            "type": n.get("type", "custom"),
+            "prompt": n.get("prompt", ""),
+            "outputs": n.get("outputs", []),
+            "runner": n.get("runner"),
+            "interactive": n.get("interactive", False),
+            "error_strategy": n.get("error_strategy", "retry"),
+            "max_retries": n.get("max_retries", 3),
+            "x": 220,
+            "y": 40 + i * 120,
+        })
+
+    edges = []
+    for e in data.get("edges", []):
+        edges.append({
+            "from_node": e.get("from", ""),
+            "to_node": e.get("to", ""),
+            "condition": e.get("condition"),
+        })
+
+    return {
+        "name": data.get("name", "imported"),
+        "description": data.get("description", ""),
+        "runner": data.get("runner", "cody"),
+        "max_iterations": data.get("max_iterations", 3),
+        "nodes": nodes,
+        "edges": edges,
+    }
 
 
 @app.post("/api/flow/run")
@@ -148,19 +260,16 @@ async def api_run_flow(req: RunRequest):
     definition = _model_to_definition(req.flow)
     workdir = str(Path(req.workdir).resolve())
 
-    # Load config and inject into runner kwargs
     runner_config = _load_runner_config()
-
     _current_flow = Flow(definition, workdir, runner_config=runner_config)
 
-    # Wire event callbacks to both list and SSE queue
     def on_event(event: dict):
         _flow_events.append(event)
         if _event_queue:
             _event_queue.put_nowait(event)
 
     _current_flow.on_event = on_event
-    _current_flow.on_node_start = lambda nid, ntype: None  # handled by on_event
+    _current_flow.on_node_start = lambda nid, ntype: None
     _current_flow.on_node_complete = lambda nid, result: None
     _current_flow.on_flow_complete = lambda state: None
 
@@ -191,11 +300,9 @@ async def api_flow_events_sse():
             yield f"data: {json.dumps({'type': 'error', 'message': 'No flow running'})}\n\n"
             return
 
-        # Send any existing events first
         for ev in _flow_events:
             yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
 
-        # Then stream new events as they arrive
         while True:
             try:
                 event = await asyncio.wait_for(_event_queue.get(), timeout=30.0)
@@ -203,7 +310,6 @@ async def api_flow_events_sse():
                 if event.get("type") == "flow_complete":
                     break
             except asyncio.TimeoutError:
-                # Send keepalive
                 yield f": keepalive\n\n"
             except Exception:
                 break
@@ -232,7 +338,6 @@ async def api_stop_flow():
 
 @app.get("/api/context/list")
 async def api_list_context(workdir: str = Query(".")):
-    """List all context files in .codyflow/context/."""
     ctx_dir = Path(workdir).resolve() / ".codyflow" / "context"
     if not ctx_dir.exists():
         return {"files": []}
@@ -241,24 +346,17 @@ async def api_list_context(workdir: str = Query(".")):
     for f in sorted(ctx_dir.iterdir()):
         if f.is_file():
             stat = f.stat()
-            files.append({
-                "name": f.name,
-                "size": stat.st_size,
-                "modified": stat.st_mtime,
-            })
+            files.append({"name": f.name, "size": stat.st_size, "modified": stat.st_mtime})
     return {"files": files}
 
 
 @app.get("/api/context/read")
 async def api_read_context(filename: str, workdir: str = Query(".")):
-    """Read a specific context file."""
     ctx_dir = Path(workdir).resolve() / ".codyflow" / "context"
     file_path = ctx_dir / filename
 
-    # Security: prevent path traversal
     if not file_path.resolve().is_relative_to(ctx_dir.resolve()):
         raise HTTPException(403, "Access denied")
-
     if not file_path.exists():
         raise HTTPException(404, f"File not found: {filename}")
 
@@ -268,7 +366,6 @@ async def api_read_context(filename: str, workdir: str = Query(".")):
 
 @app.get("/api/logs/list")
 async def api_list_logs(workdir: str = Query(".")):
-    """List execution log files."""
     logs_dir = Path(workdir).resolve() / ".codyflow" / "logs"
     if not logs_dir.exists():
         return {"files": []}
@@ -277,23 +374,17 @@ async def api_list_logs(workdir: str = Query(".")):
     for f in sorted(logs_dir.iterdir(), reverse=True):
         if f.is_file() and f.suffix == ".jsonl":
             stat = f.stat()
-            files.append({
-                "name": f.name,
-                "size": stat.st_size,
-                "modified": stat.st_mtime,
-            })
-    return {"files": files[:20]}  # Last 20 runs
+            files.append({"name": f.name, "size": stat.st_size, "modified": stat.st_mtime})
+    return {"files": files[:20]}
 
 
 @app.get("/api/logs/read")
 async def api_read_log(filename: str, workdir: str = Query(".")):
-    """Read a log file and return parsed events."""
     logs_dir = Path(workdir).resolve() / ".codyflow" / "logs"
     file_path = logs_dir / filename
 
     if not file_path.resolve().is_relative_to(logs_dir.resolve()):
         raise HTTPException(403, "Access denied")
-
     if not file_path.exists():
         raise HTTPException(404, f"File not found: {filename}")
 
@@ -329,41 +420,31 @@ async def api_save_config(config: dict):
 
 @app.get("/api/config/check-env")
 async def api_check_env():
-    """Check environment dependencies."""
     results = {}
 
-    # Python version
     v = sys.version
-    ok = sys.version_info >= (3, 10)
-    results["python"] = {"ok": ok, "detail": f"Python {v.split()[0]}"}
+    results["python"] = {"ok": sys.version_info >= (3, 10), "detail": f"Python {v.split()[0]}"}
 
-    # LangGraph
     try:
         import langgraph
         results["langgraph"] = {"ok": True, "detail": f"v{getattr(langgraph, '__version__', '?')}"}
     except ImportError:
         results["langgraph"] = {"ok": False, "detail": "未安装 — pip install langgraph"}
 
-    # Cody SDK
     try:
         import cody
         results["cody_sdk"] = {"ok": True, "detail": f"v{getattr(cody, '__version__', '?')}"}
     except ImportError:
         results["cody_sdk"] = {"ok": False, "detail": "未安装 — pip install cody-ai"}
 
-    # Claude Code SDK
     try:
         import claude_agent_sdk
         results["claude_code"] = {"ok": True, "detail": f"v{getattr(claude_agent_sdk, '__version__', '?')}"}
     except ImportError:
         results["claude_code"] = {"ok": False, "detail": "未安装 — pip install claude-agent-sdk"}
 
-    # API Key check
     import os
-    has_key = bool(
-        os.environ.get("ANTHROPIC_API_KEY")
-        or os.environ.get("CODY_MODEL_API_KEY")
-    )
+    has_key = bool(os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("CODY_MODEL_API_KEY"))
     if has_key:
         results["api_key"] = {"ok": True, "detail": "已配置 (环境变量)"}
     elif _config_path.exists():
@@ -386,7 +467,6 @@ async def api_check_env():
 # ---------------------------------------------------------------------------
 
 def _load_runner_config() -> dict:
-    """Load runner config from ~/.codyflow/config.json."""
     if not _config_path.exists():
         return {}
     try:
@@ -444,26 +524,5 @@ def _model_to_yaml_dict(flow: FlowModel) -> dict:
                 "condition": e.condition,
             }.items() if v is not None}
             for e in flow.edges
-        ],
-    }
-
-
-def _definition_to_model(d: FlowDefinition) -> dict:
-    return {
-        "name": d.name,
-        "description": d.description,
-        "runner": d.runner,
-        "max_iterations": d.max_iterations,
-        "nodes": [
-            {"id": n.id, "type": n.type, "prompt": n.prompt,
-             "outputs": n.outputs, "runner": n.runner,
-             "interactive": n.interactive,
-             "error_strategy": n.error_strategy,
-             "max_retries": n.max_retries, "x": 0, "y": 0}
-            for n in d.nodes
-        ],
-        "edges": [
-            {"from_node": e.from_node, "to_node": e.to_node, "condition": e.condition}
-            for e in d.edges
         ],
     }

@@ -11,10 +11,16 @@
   <app-header
     :current-page="currentPage"
     :run-status="store.runStatus"
+    :current-flow-id="store.currentFlowId"
+    :flow-name="store.flow.name"
     @navigate="currentPage = $event"
+    @new-flow="newFlow"
+    @open-flows="openFlows"
+    @save="saveFlow"
     @run="showRunFlowDialog"
     @stop="stopFlow"
-    @export="exportYAML"
+    @export-yaml="exportYAML"
+    @import-yaml="showImportYamlDialog"
     @load-template="loadTemplate"
   ></app-header>
 
@@ -61,6 +67,29 @@
     @check-env="checkEnvironment"
   ></settings-page>
 
+  <!-- Flow List Modal -->
+  <div class="modal-overlay" v-if="store.showFlowList" @click.self="store.showFlowList=false">
+    <div class="modal">
+      <h3>打开 Flow</h3>
+      <div v-if="store.savedFlows.length === 0" style="color:var(--text2);padding:20px 0;text-align:center">
+        还没有保存的 Flow
+      </div>
+      <div v-else class="flow-list">
+        <div v-for="f in store.savedFlows" :key="f.id" class="flow-list-item" @click="loadFlow(f.id)">
+          <div class="flow-list-name">{{ f.name || '未命名' }}</div>
+          <div class="flow-list-meta">
+            {{ f.description || '无描述' }}
+            <span class="flow-list-info">{{ f.node_count }} 节点 · {{ formatTime(f.updated_at) }}</span>
+          </div>
+          <button class="btn btn-danger btn-sm flow-list-del" @click.stop="deleteFlow(f.id)">删除</button>
+        </div>
+      </div>
+      <div style="display:flex;justify-content:flex-end;margin-top:12px">
+        <button class="btn btn-outline btn-sm" @click="store.showFlowList=false">关闭</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Run Dialog Modal -->
   <div class="modal-overlay" v-if="store.showRunDialog" @click.self="closeRunDialog">
     <div class="modal">
@@ -73,11 +102,6 @@
         <label>任务描述 / 需求</label>
         <textarea rows="4" v-model="store.runUserInput" placeholder="描述你希望 AI 完成的任务..."></textarea>
       </div>
-      <div class="form-group">
-        <label>Runner</label>
-        <input :value="store.flow.runner" disabled style="opacity:.6">
-        <div style="font-size:10px;color:var(--text2);margin-top:2px">使用 Flow 配置中的默认 Runner</div>
-      </div>
       <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
         <button class="btn btn-outline btn-sm" @click="closeRunDialog">取消</button>
         <button class="btn btn-primary btn-sm" @click="runFlow">开始运行</button>
@@ -85,10 +109,26 @@
     </div>
   </div>
 
+  <!-- Import YAML Modal -->
+  <div class="modal-overlay" v-if="store.showImportDialog" @click.self="store.showImportDialog=false">
+    <div class="modal">
+      <h3>导入 Flow YAML</h3>
+      <div class="form-group">
+        <label>粘贴 YAML 内容</label>
+        <textarea rows="12" v-model="store.importYamlContent" placeholder="name: my-flow&#10;nodes:&#10;  - id: code&#10;    type: code&#10;..." style="font-family:monospace;font-size:11px"></textarea>
+      </div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">
+        <button class="btn btn-outline btn-sm" @click="store.showImportDialog=false">取消</button>
+        <button class="btn btn-primary btn-sm" @click="doImportYaml">导入</button>
+      </div>
+    </div>
+  </div>
+
   <!-- YAML Export Modal -->
   <div class="modal-overlay" v-if="showYamlModal" @click.self="showYamlModal=false">
     <div class="modal">
-      <h3>YAML 导出</h3>
+      <h3>导出 YAML</h3>
+      <p style="font-size:12px;color:var(--text2);margin-bottom:8px">复制此 YAML 分享给其他人，他们可以通过"导入"功能加载。</p>
       <pre>{{ yamlContent }}</pre>
       <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">
         <button class="btn btn-outline btn-sm" @click="copyYaml">复制</button>

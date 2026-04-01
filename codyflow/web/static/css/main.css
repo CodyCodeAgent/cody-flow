@@ -58,7 +58,8 @@ body{
 }
 .header-nav button:hover{color:var(--text);background:var(--surface2)}
 .header-nav button.active{color:var(--accent);background:var(--accent)11}
-.header-actions{display:flex;gap:8px}
+.header-actions{display:flex;gap:6px;align-items:center}
+.header-divider{width:1px;height:20px;background:var(--border);margin:0 2px}
 
 /* ---- Buttons ---- */
 .btn{
@@ -222,6 +223,19 @@ body{
   background:var(--surface2);padding:12px;border-radius:8px;
   font-size:12px;color:var(--text);white-space:pre-wrap;overflow:auto;
 }
+
+/* ---- Flow List ---- */
+.flow-list{display:flex;flex-direction:column;gap:6px;max-height:400px;overflow-y:auto}
+.flow-list-item{
+  padding:12px;border-radius:8px;background:var(--surface2);
+  border:1px solid var(--border);cursor:pointer;
+  transition:all .15s;display:flex;flex-wrap:wrap;align-items:center;gap:8px;
+}
+.flow-list-item:hover{border-color:var(--accent);background:var(--accent)08}
+.flow-list-name{font-weight:600;font-size:14px;flex:1;min-width:150px}
+.flow-list-meta{font-size:12px;color:var(--text2);width:100%}
+.flow-list-info{font-size:10px;color:var(--text2);margin-left:8px}
+.flow-list-del{flex-shrink:0}
 
 /* ---- Sidebar Tabs ---- */
 .sidebar-tabs{

@@ -22,7 +22,30 @@ const API = {
     return res.json();
   },
 
-  // Flow operations
+  async del(url) {
+    const res = await fetch(url, { method: 'DELETE' });
+    if (!res.ok) throw new Error(res.statusText);
+    return res.json();
+  },
+
+  // ---- Flow CRUD (SQLite) ----
+  async listFlows() {
+    return this.get('/api/flows');
+  },
+
+  async getFlow(flowId) {
+    return this.get('/api/flows/' + flowId);
+  },
+
+  async saveFlow(flow, flowId) {
+    return this.post('/api/flows/save', { flow, flow_id: flowId || null });
+  },
+
+  async deleteFlow(flowId) {
+    return this.del('/api/flows/' + flowId);
+  },
+
+  // ---- Flow operations ----
   async runFlow(flow, workdir, userInput) {
     return this.post('/api/flow/run', {
       flow,
@@ -43,7 +66,15 @@ const API = {
     return this.post('/api/flow/validate', flow);
   },
 
-  // Context file browser
+  async exportYaml(flow) {
+    return this.post('/api/flow/export-yaml', flow);
+  },
+
+  async importYaml(yamlContent) {
+    return this.post('/api/flow/import-yaml', { yaml_content: yamlContent });
+  },
+
+  // ---- Context file browser ----
   async listContextFiles(workdir) {
     return this.get('/api/context/list?workdir=' + encodeURIComponent(workdir || '.'));
   },
@@ -55,19 +86,7 @@ const API = {
     );
   },
 
-  // Log browser
-  async listLogs(workdir) {
-    return this.get('/api/logs/list?workdir=' + encodeURIComponent(workdir || '.'));
-  },
-
-  async readLog(filename, workdir) {
-    return this.get(
-      '/api/logs/read?filename=' + encodeURIComponent(filename) +
-      '&workdir=' + encodeURIComponent(workdir || '.')
-    );
-  },
-
-  // Config operations
+  // ---- Config ----
   async saveConfig(config) {
     return this.post('/api/config/save', config);
   },
@@ -80,7 +99,7 @@ const API = {
     return this.get('/api/config/check-env');
   },
 
-  // SSE — returns EventSource instance
+  // SSE
   connectSSE() {
     return new EventSource('/api/flow/events');
   },

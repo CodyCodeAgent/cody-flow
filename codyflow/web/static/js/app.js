@@ -9,8 +9,8 @@ const app = createApp({
     return {
       currentPage: 'editor',
       store,
-      pollTimer: null,
       sseSource: null,
+      pollTimer: null,
       showYamlModal: false,
       yamlContent: '',
     };
@@ -24,6 +24,77 @@ const app = createApp({
   },
 
   methods: {
+    // ---- Flow management (SQLite) ----
+    newFlow() {
+      if (store.flow.nodes.length > 0 && !confirm('当前编辑内容未保存，确定要新建吗？')) return;
+      store.flow = { name: '', description: '', runner: 'cody', max_iterations: 3, nodes: [], edges: [] };
+      store.currentFlowId = null;
+      store.selectedNode = null;
+      store.nodeIdCounter = 0;
+    },
+
+    async openFlows() {
+      try {
+        const data = await API.listFlows();
+        store.savedFlows = data.flows;
+        store.showFlowList = true;
+      } catch (e) {
+        alert('加载 Flow 列表失败: ' + e.message);
+      }
+    },
+
+    async loadFlow(flowId) {
+      try {
+        const data = await API.getFlow(flowId);
+        const def = data.definition;
+        store.flow = {
+          name: def.name || data.name,
+          description: def.description || data.description,
+          runner: def.runner || 'cody',
+          max_iterations: def.max_iterations || 3,
+          nodes: def.nodes || [],
+          edges: def.edges || [],
+        };
+        store.currentFlowId = data.id;
+        store.selectedNode = null;
+        store.showFlowList = false;
+        // Restore nodeIdCounter from existing nodes
+        store.nodeIdCounter = store.flow.nodes.length;
+      } catch (e) {
+        alert('加载 Flow 失败: ' + e.message);
+      }
+    },
+
+    async saveFlow() {
+      if (!store.flow.name) {
+        const name = prompt('请输入 Flow 名称:', 'my-flow');
+        if (!name) return;
+        store.flow.name = name;
+      }
+
+      try {
+        const payload = this._buildFlowPayload();
+        const result = await API.saveFlow(payload, store.currentFlowId);
+        store.currentFlowId = result.id;
+        store.runEvents.push({ type: 'node_complete', text: '✓ Flow 已保存 (ID: ' + result.id + ')' });
+      } catch (e) {
+        alert('保存失败: ' + e.message);
+      }
+    },
+
+    async deleteFlow(flowId) {
+      if (!confirm('确定要删除这个 Flow 吗？')) return;
+      try {
+        await API.deleteFlow(flowId);
+        store.savedFlows = store.savedFlows.filter(f => f.id !== flowId);
+        if (store.currentFlowId === flowId) {
+          store.currentFlowId = null;
+        }
+      } catch (e) {
+        alert('删除失败: ' + e.message);
+      }
+    },
+
     // ---- Node operations ----
     addNodeAtCenter(type) {
       const x = 200 + Math.random() * 100;
@@ -92,20 +163,13 @@ const app = createApp({
       }
     },
 
-    removeEdge(idx) {
-      store.flow.edges.splice(idx, 1);
-    },
+    removeEdge(idx) { store.flow.edges.splice(idx, 1); },
 
     editEdge(idx) {
       const edge = store.flow.edges[idx];
       if (!edge) return;
-      const cond = prompt(
-        '设置条件 (如 needs_fix, passed，留空取消条件):',
-        edge.condition || ''
-      );
-      if (cond !== null) {
-        edge.condition = cond || null;
-      }
+      const cond = prompt('设置条件 (如 needs_fix, passed，留空取消条件):', edge.condition || '');
+      if (cond !== null) edge.condition = cond || null;
     },
 
     // ---- Canvas transform ----
@@ -117,6 +181,8 @@ const app = createApp({
 
     // ---- Template ----
     loadTemplate() {
+      if (store.flow.nodes.length > 0 && !confirm('加载模板将覆盖当前编辑内容，继续吗？')) return;
+      store.flow.name = 'basic-feature';
       store.flow.nodes = [
         { id:'discuss', type:'discuss', x:220, y:40, prompt:'', outputs:['discuss_output.md'], runner:null, interactive:true, error_strategy:'retry', max_retries:3 },
         { id:'learn', type:'learn', x:220, y:160, prompt:'', outputs:['learn_output.md'], runner:null, interactive:false, error_strategy:'retry', max_retries:3 },
@@ -132,50 +198,64 @@ const app = createApp({
         { from_node:'judge', to_node:'code', condition:'needs_fix' },
       ];
       store.selectedNode = null;
+      store.currentFlowId = null;
       store.nodeIdCounter = 5;
     },
 
     // ---- Export YAML ----
-    exportYAML() {
-      let y = `name: "${store.flow.name}"\n`;
-      y += `description: "${store.flow.description}"\n`;
-      y += `runner: ${store.flow.runner}\n`;
-      y += `max_iterations: ${store.flow.max_iterations}\n\nnodes:\n`;
-
-      store.flow.nodes.forEach(n => {
-        y += `  - id: ${n.id}\n    type: ${n.type}\n`;
-        if (n.prompt) y += `    prompt: "${n.prompt.replace(/"/g, '\\"')}"\n`;
-        if (n.interactive) y += `    interactive: true\n`;
-        if (n.runner) y += `    runner: ${n.runner}\n`;
-        if (n.error_strategy !== 'retry') y += `    error_strategy: ${n.error_strategy}\n`;
-        if (n.max_retries !== 3) y += `    max_retries: ${n.max_retries}\n`;
-        if (n.outputs.length) y += `    outputs:\n${n.outputs.map(o => '      - ' + o).join('\n')}\n`;
-      });
-
-      y += `\nedges:\n`;
-      store.flow.edges.forEach(e => {
-        y += `  - from: ${e.from_node}\n    to: ${e.to_node}\n`;
-        if (e.condition) y += `    condition: ${e.condition}\n`;
-      });
-
-      this.yamlContent = y;
-      this.showYamlModal = true;
+    async exportYAML() {
+      try {
+        const payload = this._buildFlowPayload();
+        const data = await API.exportYaml(payload);
+        this.yamlContent = data.yaml;
+        this.showYamlModal = true;
+      } catch (e) {
+        alert('导出失败: ' + e.message);
+      }
     },
 
-    copyYaml() {
-      navigator.clipboard.writeText(this.yamlContent);
+    copyYaml() { navigator.clipboard.writeText(this.yamlContent); },
+
+    // ---- Import YAML ----
+    showImportYamlDialog() {
+      store.importYamlContent = '';
+      store.showImportDialog = true;
+    },
+
+    async doImportYaml() {
+      if (!store.importYamlContent.trim()) return;
+      try {
+        const data = await API.importYaml(store.importYamlContent);
+        store.flow = {
+          name: data.name,
+          description: data.description,
+          runner: data.runner,
+          max_iterations: data.max_iterations,
+          nodes: data.nodes,
+          edges: data.edges,
+        };
+        store.currentFlowId = null; // imported as unsaved
+        store.selectedNode = null;
+        store.nodeIdCounter = data.nodes.length;
+        store.showImportDialog = false;
+        store.runEvents.push({ type: 'node_complete', text: '✓ YAML 导入成功 (' + data.nodes.length + ' 个节点)' });
+      } catch (e) {
+        alert('导入失败: ' + e.message);
+      }
     },
 
     // ---- Run dialog ----
     showRunFlowDialog() {
+      if (store.flow.nodes.length === 0) {
+        alert('请先添加节点');
+        return;
+      }
       store.runWorkdir = store.config.general.workdir || '.';
       store.runUserInput = '';
       store.showRunDialog = true;
     },
 
-    closeRunDialog() {
-      store.showRunDialog = false;
-    },
+    closeRunDialog() { store.showRunDialog = false; },
 
     // ---- Run flow ----
     async runFlow() {
@@ -186,21 +266,7 @@ const app = createApp({
       store.completedNodes = [];
 
       try {
-        const payload = {
-          name: store.flow.name,
-          description: store.flow.description,
-          runner: store.flow.runner,
-          max_iterations: store.flow.max_iterations,
-          nodes: store.flow.nodes.map(n => ({
-            id: n.id, type: n.type, prompt: n.prompt,
-            outputs: n.outputs, runner: n.runner,
-            interactive: n.interactive,
-            error_strategy: n.error_strategy,
-            max_retries: n.max_retries, x: n.x, y: n.y,
-          })),
-          edges: store.flow.edges,
-        };
-
+        const payload = this._buildFlowPayload();
         await API.runFlow(payload, store.runWorkdir, store.runUserInput);
         this.connectSSE();
       } catch (e) {
@@ -209,30 +275,35 @@ const app = createApp({
       }
     },
 
+    _buildFlowPayload() {
+      return {
+        name: store.flow.name || 'unnamed',
+        description: store.flow.description,
+        runner: store.flow.runner,
+        max_iterations: store.flow.max_iterations,
+        nodes: store.flow.nodes.map(n => ({
+          id: n.id, type: n.type, prompt: n.prompt,
+          outputs: n.outputs, runner: n.runner,
+          interactive: n.interactive,
+          error_strategy: n.error_strategy,
+          max_retries: n.max_retries, x: n.x, y: n.y,
+        })),
+        edges: store.flow.edges,
+      };
+    },
+
     // ---- SSE connection ----
     connectSSE() {
-      if (this.sseSource) {
-        this.sseSource.close();
-      }
-
+      if (this.sseSource) this.sseSource.close();
       this.sseSource = API.connectSSE();
 
       this.sseSource.onmessage = (event) => {
-        try {
-          const ev = JSON.parse(event.data);
-          this.handleFlowEvent(ev);
-        } catch (e) { /* ignore parse errors */ }
+        try { this.handleFlowEvent(JSON.parse(event.data)); } catch (e) {}
       };
 
       this.sseSource.onerror = () => {
-        // SSE disconnected — fallback to polling
-        if (this.sseSource) {
-          this.sseSource.close();
-          this.sseSource = null;
-        }
-        if (store.runStatus === 'running') {
-          this.startPolling();
-        }
+        if (this.sseSource) { this.sseSource.close(); this.sseSource = null; }
+        if (store.runStatus === 'running') this.startPolling();
       };
     },
 
@@ -248,30 +319,21 @@ const app = createApp({
         });
       } else if (ev.type === 'node_complete') {
         store.runningNodes = store.runningNodes.filter(id => id !== ev.node_id);
-        if (!store.completedNodes.includes(ev.node_id)) {
-          store.completedNodes.push(ev.node_id);
-        }
+        if (!store.completedNodes.includes(ev.node_id)) store.completedNodes.push(ev.node_id);
         let text = `✓ ${ev.node_id}`;
         if (ev.duration) text += ` (${ev.duration}s)`;
         let detail = '';
         if (ev.route) {
-          detail = `路由决定: ${ev.route}`;
+          detail = `路由: ${ev.route}`;
           if (ev.reasoning) detail += ` — ${ev.reasoning.substring(0, 100)}`;
         }
         store.runEvents.push({ type: 'node_complete', time, text, detail });
       } else if (ev.type === 'node_error') {
-        store.runEvents.push({
-          type: 'error', time,
-          text: `✗ ${ev.node_id} 错误 (尝试 ${ev.attempt})`,
-          detail: ev.error,
-        });
+        store.runEvents.push({ type: 'error', time, text: `✗ ${ev.node_id} 错误 (尝试 ${ev.attempt})`, detail: ev.error });
       } else if (ev.type === 'flow_complete') {
         store.runStatus = 'completed';
         store.runningNodes = [];
-        store.runEvents.push({
-          type: 'node_complete', time,
-          text: `✓ Flow 完成 (${ev.completed_nodes.length} 节点, ${ev.iteration} 迭代, ${ev.total_duration}s)`,
-        });
+        store.runEvents.push({ type: 'node_complete', time, text: `✓ Flow 完成 (${ev.completed_nodes.length} 节点, ${ev.iteration} 迭代, ${ev.total_duration}s)` });
         this.disconnectSSE();
         this.refreshContextFiles();
       } else if (ev.type === 'flow_stopped') {
@@ -280,19 +342,11 @@ const app = createApp({
         store.runEvents.push({ type: 'error', time, text: 'Flow 已停止' });
         this.disconnectSSE();
       } else if (ev.type === 'interactive_turn') {
-        store.runEvents.push({
-          type: 'node_start', time,
-          text: `💬 ${ev.node_id} 对话轮次 ${ev.turn} (${ev.role})`,
-        });
+        store.runEvents.push({ type: 'node_start', time, text: `💬 ${ev.node_id} 轮次 ${ev.turn} (${ev.role})` });
       } else if (ev.type === 'node_skipped') {
-        store.runEvents.push({
-          type: 'error', time,
-          text: `⊘ ${ev.node_id} 已跳过`,
-          detail: ev.error,
-        });
+        store.runEvents.push({ type: 'error', time, text: `⊘ ${ev.node_id} 已跳过`, detail: ev.error });
       }
 
-      // Auto-scroll log
       this.$nextTick(() => {
         const log = document.querySelector('.events-log');
         if (log) log.scrollTop = log.scrollHeight;
@@ -300,17 +354,10 @@ const app = createApp({
     },
 
     disconnectSSE() {
-      if (this.sseSource) {
-        this.sseSource.close();
-        this.sseSource = null;
-      }
-      if (this.pollTimer) {
-        clearInterval(this.pollTimer);
-        this.pollTimer = null;
-      }
+      if (this.sseSource) { this.sseSource.close(); this.sseSource = null; }
+      if (this.pollTimer) { clearInterval(this.pollTimer); this.pollTimer = null; }
     },
 
-    // ---- Polling fallback ----
     startPolling() {
       this.pollTimer = setInterval(async () => {
         try {
@@ -321,20 +368,17 @@ const app = createApp({
             store.runStatus = data.status === 'completed' ? 'completed' : 'failed';
             this.refreshContextFiles();
           }
-        } catch (e) { /* ignore poll errors */ }
+        } catch (e) {}
       }, 2000);
     },
 
-    // ---- Stop flow ----
     async stopFlow() {
       try {
         await API.stopFlow();
         store.runStatus = 'idle';
         store.runningNodes = [];
         this.disconnectSSE();
-      } catch (e) {
-        alert('停止失败: ' + e.message);
-      }
+      } catch (e) { alert('停止失败: ' + e.message); }
     },
 
     // ---- Context file browser ----
@@ -342,7 +386,7 @@ const app = createApp({
       try {
         const data = await API.listContextFiles(store.runWorkdir || '.');
         store.contextFiles = data.files;
-      } catch (e) { /* ignore */ }
+      } catch (e) {}
     },
 
     async loadContextFile(filename) {
@@ -350,9 +394,7 @@ const app = createApp({
         const data = await API.readContextFile(filename, store.runWorkdir || '.');
         store.selectedContextFile = filename;
         store.contextFileContent = data.content;
-      } catch (e) {
-        alert('读取失败: ' + e.message);
-      }
+      } catch (e) { alert('读取失败: ' + e.message); }
     },
 
     // ---- Settings ----
@@ -360,18 +402,20 @@ const app = createApp({
       try {
         await API.saveConfig(config);
         store.runEvents.push({ type: 'node_complete', text: '✓ 配置已保存' });
-      } catch (e) {
-        alert('保存失败: ' + e.message);
-      }
+      } catch (e) { alert('保存失败: ' + e.message); }
     },
 
     async checkEnvironment() {
       try {
         const data = await API.checkEnvironment();
         Object.assign(store.envStatus, data);
-      } catch (e) {
-        alert('检测失败: ' + e.message);
-      }
+      } catch (e) { alert('检测失败: ' + e.message); }
+    },
+
+    // ---- Helpers ----
+    formatTime(ts) {
+      if (!ts) return '';
+      return new Date(ts * 1000).toLocaleString();
     },
 
     // ---- Init ----
@@ -383,7 +427,7 @@ const app = createApp({
           if (cfg.claude_code) Object.assign(store.config.claude_code, cfg.claude_code);
           if (cfg.general) Object.assign(store.config.general, cfg.general);
         }
-      } catch (e) { /* ignore */ }
+      } catch (e) {}
     },
   },
 

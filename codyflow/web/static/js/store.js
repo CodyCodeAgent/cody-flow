@@ -31,9 +31,9 @@ const NODE_DESCS = {
 
 // Store object — will be made reactive by Vue
 const store = {
-  // Flow definition
+  // Current flow being edited
   flow: {
-    name: 'my-feature',
+    name: '',
     description: '',
     runner: 'cody',
     max_iterations: 3,
@@ -41,16 +41,29 @@ const store = {
     edges: [],
   },
 
+  // Current flow's DB ID (null = unsaved new flow)
+  currentFlowId: null,
+
+  // Saved flows list
+  savedFlows: [],
+
   // UI state
   selectedNode: null,
-  currentPage: 'editor',
+  currentPage: 'editor',  // editor | settings
   nodeIdCounter: 0,
 
+  // Flow list panel
+  showFlowList: false,
+
+  // Import YAML modal
+  showImportDialog: false,
+  importYamlContent: '',
+
   // Run state
-  runStatus: 'idle',  // idle | running | completed | failed
+  runStatus: 'idle',
   runEvents: [],
-  runningNodes: [],   // node IDs currently executing
-  completedNodes: [], // node IDs that have completed
+  runningNodes: [],
+  completedNodes: [],
 
   // Run dialog
   showRunDialog: false,
