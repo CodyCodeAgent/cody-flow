@@ -358,6 +358,11 @@ class Flow:
     def _make_node_fn(self, node_config: NodeConfig):
         flow = self
 
+        # Pre-instantiate to let node __init__ apply defaults
+        # (e.g. DiscussNode sets config.interactive = True)
+        node_cls = get_node_type(node_config.type)
+        node_cls(node_config)
+
         async def node_fn(state: FlowState) -> FlowState:
             return await flow._execute_node_core(
                 node_config, state, interactive=node_config.interactive,
@@ -484,6 +489,10 @@ class Flow:
                     prev_state = existing["channel_values"]
                     initial_state = {**initial_state, **prev_state}
                     initial_state["current_node"] = ""
+                    # Preserve current run's user input over stale checkpoint
+                    if input_text:
+                        initial_state["user_message"] = input_text
+                        initial_state["flow_description"] = self.definition.description or input_text
                     logger.info(
                         f"Resuming flow '{self.definition.name}' — "
                         f"completed: {initial_state.get('completed_nodes', [])}, "

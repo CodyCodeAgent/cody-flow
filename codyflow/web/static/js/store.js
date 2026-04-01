@@ -49,7 +49,6 @@ const store = Vue.reactive({
 
   // UI state
   selectedNode: null,
-  currentPage: 'editor',  // editor | settings
   nodeIdCounter: 0,
 
   // Flow list panel

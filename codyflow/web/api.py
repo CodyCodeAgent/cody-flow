@@ -221,38 +221,7 @@ async def api_get_template(filename: str):
     except yaml.YAMLError as e:
         raise HTTPException(500, f"Template parse error: {e}")
 
-    # Parse into standardized format with default UI positions
-    nodes = []
-    for i, n in enumerate(data.get("nodes", [])):
-        nodes.append({
-            "id": n.get("id", f"node_{i}"),
-            "type": n.get("type", "custom"),
-            "prompt": n.get("prompt", ""),
-            "outputs": n.get("outputs", []),
-            "runner": n.get("runner"),
-            "interactive": n.get("interactive", False),
-            "error_strategy": n.get("error_strategy", "retry"),
-            "max_retries": n.get("max_retries", 3),
-            "x": 220,
-            "y": 40 + i * 120,
-        })
-
-    edges = []
-    for e in data.get("edges", []):
-        edges.append({
-            "from_node": e.get("from", ""),
-            "to_node": e.get("to", ""),
-            "condition": e.get("condition"),
-        })
-
-    return {
-        "name": data.get("name", "imported"),
-        "description": data.get("description", ""),
-        "runner": data.get("runner", "cody"),
-        "max_iterations": data.get("max_iterations", 3),
-        "nodes": nodes,
-        "edges": edges,
-    }
+    return _parse_yaml_flow_data(data)
 
 
 @app.post("/api/flow/validate")
@@ -285,38 +254,7 @@ async def api_import_yaml(req: ImportYamlRequest):
     if not isinstance(data, dict):
         raise HTTPException(400, "无效的 YAML 格式")
 
-    # Parse into standardized format with default UI positions
-    nodes = []
-    for i, n in enumerate(data.get("nodes", [])):
-        nodes.append({
-            "id": n.get("id", f"node_{i}"),
-            "type": n.get("type", "custom"),
-            "prompt": n.get("prompt", ""),
-            "outputs": n.get("outputs", []),
-            "runner": n.get("runner"),
-            "interactive": n.get("interactive", False),
-            "error_strategy": n.get("error_strategy", "retry"),
-            "max_retries": n.get("max_retries", 3),
-            "x": 220,
-            "y": 40 + i * 120,
-        })
-
-    edges = []
-    for e in data.get("edges", []):
-        edges.append({
-            "from_node": e.get("from", ""),
-            "to_node": e.get("to", ""),
-            "condition": e.get("condition"),
-        })
-
-    return {
-        "name": data.get("name", "imported"),
-        "description": data.get("description", ""),
-        "runner": data.get("runner", "cody"),
-        "max_iterations": data.get("max_iterations", 3),
-        "nodes": nodes,
-        "edges": edges,
-    }
+    return _parse_yaml_flow_data(data)
 
 
 @app.post("/api/flow/run")
@@ -651,6 +589,41 @@ def _load_runner_config() -> dict:
         return json.loads(_config_path.read_text(encoding="utf-8"))
     except Exception:
         return {}
+
+
+def _parse_yaml_flow_data(data: dict) -> dict:
+    """Parse raw YAML data into standardized flow format with UI positions."""
+    nodes = []
+    for i, n in enumerate(data.get("nodes", [])):
+        nodes.append({
+            "id": n.get("id", f"node_{i}"),
+            "type": n.get("type", "custom"),
+            "prompt": n.get("prompt", ""),
+            "outputs": n.get("outputs", []),
+            "runner": n.get("runner"),
+            "interactive": n.get("interactive", False),
+            "error_strategy": n.get("error_strategy", "retry"),
+            "max_retries": n.get("max_retries", 3),
+            "x": 220,
+            "y": 40 + i * 120,
+        })
+
+    edges = []
+    for e in data.get("edges", []):
+        edges.append({
+            "from_node": e.get("from", ""),
+            "to_node": e.get("to", ""),
+            "condition": e.get("condition"),
+        })
+
+    return {
+        "name": data.get("name", "imported"),
+        "description": data.get("description", ""),
+        "runner": data.get("runner", "cody"),
+        "max_iterations": data.get("max_iterations", 3),
+        "nodes": nodes,
+        "edges": edges,
+    }
 
 
 def _model_to_definition(flow: FlowModel) -> FlowDefinition:
