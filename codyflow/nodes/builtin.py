@@ -2,32 +2,50 @@
 
 from __future__ import annotations
 
-from codyflow.nodes.base import FlowContext, Node, NodeConfig, NodeResult
+from codyflow.nodes.base import FlowState, Node, NodeConfig, NodeResult
 from codyflow.nodes.registry import register_node_type
 
 
 class DiscussNode(Node):
-    """Discussion node - analyzes requirements and produces conclusions."""
+    """Discussion node - interactive multi-turn analysis with user."""
 
     node_type = "discuss"
     default_prompt = (
         "你是讨论节点。请根据用户的需求进行深入分析和讨论。\n"
         "分析需求的可行性、技术方案、潜在风险和建议的实现路径。\n"
-        "产出一份清晰的讨论结论文档。"
+        "与用户进行多轮对话，直到用户确认讨论结束。\n"
+        "最终产出一份清晰的讨论结论文档。"
     )
 
-    async def execute(self, runner, flow_context: FlowContext) -> NodeResult:
-        prompt = self.build_prompt(flow_context)
-        result = await runner.run(prompt)
+    def __init__(self, config: NodeConfig):
+        # 讨论节点默认开启交互模式
+        config.interactive = config.interactive or True
+        super().__init__(config)
+
+    async def execute(self, runner, state: FlowState) -> NodeResult:
+        prompt = self.build_prompt(state)
+
+        # 交互模式：使用 session_id 支持多轮对话
+        user_msg = state.get("user_message", "")
+        session_id = state.get("_discuss_session_id")
+
+        if user_msg and session_id:
+            # 后续轮次：用户追加消息
+            result = await runner.run(user_msg, session_id=session_id)
+        else:
+            # 首轮：发送完整 prompt
+            result = await runner.run(prompt)
+
         return NodeResult(
             node_id=self.config.id,
             output=result.output,
             output_files=self.config.outputs,
+            metadata={"session_id": result.session_id},
         )
 
 
 class LearnNode(Node):
-    """Learning node - studies the project's codebase and tech stack."""
+    """Learning node - studies the project codebase and tech stack."""
 
     node_type = "learn"
     default_prompt = (
@@ -37,8 +55,8 @@ class LearnNode(Node):
         "产出一份项目知识摘要文档。"
     )
 
-    async def execute(self, runner, flow_context: FlowContext) -> NodeResult:
-        prompt = self.build_prompt(flow_context)
+    async def execute(self, runner, state: FlowState) -> NodeResult:
+        prompt = self.build_prompt(state)
         result = await runner.run(prompt)
         return NodeResult(
             node_id=self.config.id,
@@ -54,12 +72,13 @@ class CodeNode(Node):
     default_prompt = (
         "你是写代码节点。请根据前序节点提供的讨论结论、学习成果"
         "以及可能的反思报告来编写或修改代码。\n"
+        "你可以直接修改项目源码文件。\n"
         "确保代码质量高、符合项目现有风格、并满足需求。\n"
-        "产出代码变更的总结文档。"
+        "完成后，产出一份代码变更总结文档。"
     )
 
-    async def execute(self, runner, flow_context: FlowContext) -> NodeResult:
-        prompt = self.build_prompt(flow_context)
+    async def execute(self, runner, state: FlowState) -> NodeResult:
+        prompt = self.build_prompt(state)
         result = await runner.run(prompt)
         return NodeResult(
             node_id=self.config.id,
@@ -74,6 +93,7 @@ class ReflectNode(Node):
     node_type = "reflect"
     default_prompt = (
         "你是反思节点。请仔细检查前序节点完成的工作，特别是代码变更。\n"
+        "你可以使用 git diff 或直接查看文件来了解变更内容。\n"
         "对照最初的需求，检查以下方面：\n"
         "1. 功能是否完整实现\n"
         "2. 代码质量和风格是否符合项目标准\n"
@@ -83,8 +103,8 @@ class ReflectNode(Node):
         "产出一份详细的反思报告，明确列出发现的问题和改进建议。"
     )
 
-    async def execute(self, runner, flow_context: FlowContext) -> NodeResult:
-        prompt = self.build_prompt(flow_context)
+    async def execute(self, runner, state: FlowState) -> NodeResult:
+        prompt = self.build_prompt(state)
         result = await runner.run(prompt)
         return NodeResult(
             node_id=self.config.id,
@@ -105,9 +125,8 @@ class JudgeNode(Node):
         "然后简要说明判断理由。"
     )
 
-    async def execute(self, runner, flow_context: FlowContext) -> NodeResult:
-        # Add routing options to the prompt
-        prompt = self.build_prompt(flow_context)
+    async def execute(self, runner, state: FlowState) -> NodeResult:
+        prompt = self.build_prompt(state)
         result = await runner.run(prompt)
 
         # Parse routing decision from output
@@ -127,13 +146,17 @@ class JudgeNode(Node):
 
 
 class CustomNode(Node):
-    """Custom node - user-defined behavior via prompt."""
+    """Custom node - user-defined behavior via prompt.
+
+    Can be used to create any kind of node: pause, user-input,
+    API call, testing, deployment, etc.
+    """
 
     node_type = "custom"
     default_prompt = ""
 
-    async def execute(self, runner, flow_context: FlowContext) -> NodeResult:
-        prompt = self.build_prompt(flow_context)
+    async def execute(self, runner, state: FlowState) -> NodeResult:
+        prompt = self.build_prompt(state)
         result = await runner.run(prompt)
         return NodeResult(
             node_id=self.config.id,
