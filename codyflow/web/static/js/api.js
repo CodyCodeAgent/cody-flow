@@ -46,22 +46,6 @@ const API = {
   },
 
   // ---- Flow operations ----
-  async runFlow(flow, workdir, userInput) {
-    return this.post('/api/flow/run', {
-      flow,
-      workdir: workdir || '.',
-      user_input: userInput || '',
-    });
-  },
-
-  async getFlowStatus() {
-    return this.get('/api/flow/status');
-  },
-
-  async stopFlow() {
-    return this.post('/api/flow/stop');
-  },
-
   async validateFlow(flow) {
     return this.post('/api/flow/validate', flow);
   },
@@ -108,8 +92,29 @@ const API = {
     return this.get('/api/templates/' + encodeURIComponent(filename));
   },
 
-  // SSE
-  connectSSE() {
-    return new EventSource('/api/flow/events');
+  // ---- Tasks ----
+  async createTask(flow, flowId, workdir, userInput) {
+    return this.post('/api/tasks', {
+      flow,
+      flow_id: flowId || null,
+      workdir: workdir || '.',
+      user_input: userInput || '',
+    });
+  },
+
+  async listTasks() {
+    return this.get('/api/tasks');
+  },
+
+  async getTask(taskId) {
+    return this.get('/api/tasks/' + taskId);
+  },
+
+  async stopTask(taskId) {
+    return this.post('/api/tasks/' + taskId + '/stop');
+  },
+
+  async deleteTask(taskId) {
+    return this.del('/api/tasks/' + taskId);
   },
 };

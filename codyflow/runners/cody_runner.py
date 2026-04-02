@@ -36,10 +36,35 @@ class CodyRunner(Runner):
         kwargs = {}
         if session_id:
             kwargs["session_id"] = session_id
-        result = await client.run(prompt, **kwargs)
+
+        full_output = ""
+        result_session_id = session_id
+
+        async for chunk in client.stream(prompt, **kwargs):
+            if chunk.type == "text_delta":
+                full_output += chunk.content
+                if self.on_chunk:
+                    self.on_chunk(chunk.content, "text_delta")
+            elif chunk.type == "thinking":
+                if self.on_chunk:
+                    self.on_chunk(chunk.content, "thinking")
+            elif chunk.type == "tool_call":
+                if self.on_chunk:
+                    self.on_chunk(chunk.tool_name, "tool_call", {
+                        "args": chunk.args,
+                        "tool_call_id": chunk.tool_call_id,
+                    })
+            elif chunk.type == "tool_result":
+                if self.on_chunk:
+                    self.on_chunk(chunk.content or "", "tool_result", {
+                        "tool_name": chunk.tool_name,
+                    })
+            elif chunk.type == "done":
+                result_session_id = getattr(chunk, "session_id", None) or session_id
+
         return RunnerResult(
-            output=result.output,
-            session_id=getattr(result, "session_id", None),
+            output=full_output,
+            session_id=result_session_id,
             metadata={"runner": "cody"},
         )
 

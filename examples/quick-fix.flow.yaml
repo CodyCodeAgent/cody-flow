@@ -4,6 +4,9 @@ runner: cody
 max_iterations: 2
 
 nodes:
+  - id: start
+    type: start
+
   - id: code
     type: code
     prompt: "根据用户需求直接修改代码。快速修复，不需要过多讨论。"
@@ -20,7 +23,12 @@ nodes:
     outputs:
       - judge_output.md
 
+  - id: end
+    type: end
+
 edges:
+  - from: start
+    to: code
   - from: code
     to: reflect
   - from: reflect
@@ -29,5 +37,5 @@ edges:
     to: code
     condition: needs_fix
   - from: judge
-    to: END
+    to: end
     condition: passed

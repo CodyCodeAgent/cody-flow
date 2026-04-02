@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
+import secrets
 import sys
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -16,7 +19,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from starlette.responses import StreamingResponse
 
 from codyflow.engine.flow import EdgeDef, Flow, FlowDefinition, validate_flow
 from codyflow.nodes.base import NodeConfig
@@ -35,21 +37,65 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Mount static files
 _web_dir = Path(__file__).parent
 app.mount("/static", StaticFiles(directory=str(_web_dir / "static")), name="static")
 
-# Singletons
 _storage = FlowStorage()
 _config_path = Path.home() / ".codyflow" / "config.json"
+_tasks_base_dir = Path.home() / ".codyflow" / "tasks"
 
-# In-memory run state
-_current_flow: Flow | None = None
-_flow_task: asyncio.Task | None = None
-_flow_events: list[dict[str, Any]] = []
-_event_queue: asyncio.Queue | None = None
-_interactive_input_queue: asyncio.Queue | None = None
-_active_ws: WebSocket | None = None
+
+# ---------------------------------------------------------------------------
+# Per-task in-memory context
+# ---------------------------------------------------------------------------
+
+@dataclass
+class TaskContext:
+    task_id: str
+    flow_obj: Flow | None = None
+    asyncio_task: asyncio.Task | None = None
+    event_queue: asyncio.Queue = field(default_factory=asyncio.Queue)
+    interactive_queue: asyncio.Queue = field(default_factory=asyncio.Queue)
+    log_path: str = ""
+
+    @property
+    def is_running(self) -> bool:
+        return self.asyncio_task is not None and not self.asyncio_task.done()
+
+
+# task_id → TaskContext (in-memory, only live tasks)
+_task_contexts: dict[str, TaskContext] = {}
+# workdir → task_id (mutex: one task per workdir)
+_workdir_locks: dict[str, str] = {}
+
+
+def _new_task_id() -> str:
+    return f"t{int(time.time() * 1000)}{secrets.token_hex(3)}"
+
+
+def _task_log_path(task_id: str) -> Path:
+    p = _tasks_base_dir / task_id
+    p.mkdir(parents=True, exist_ok=True)
+    return p / "events.jsonl"
+
+
+def _append_event_log(log_path: str, event: dict) -> None:
+    with contextlib.suppress(Exception):
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(event, ensure_ascii=False) + "\n")
+
+
+def _read_event_log(log_path: str) -> list[dict]:
+    events = []
+    p = Path(log_path)
+    if not p.exists():
+        return events
+    for line in p.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line:
+            with contextlib.suppress(json.JSONDecodeError):
+                events.append(json.loads(line))
+    return events
 
 
 # ---------------------------------------------------------------------------
@@ -79,6 +125,7 @@ class FlowModel(BaseModel):
     name: str
     description: str = ""
     runner: str = "cody"
+    workdir: str = ""
     max_iterations: int = 5
     nodes: list[NodeModel] = []
     edges: list[EdgeModel] = []
@@ -86,11 +133,12 @@ class FlowModel(BaseModel):
 
 class SaveFlowRequest(BaseModel):
     flow: FlowModel
-    flow_id: int | None = None  # None = create new, int = update existing
+    flow_id: int | None = None
 
 
-class RunRequest(BaseModel):
+class CreateTaskRequest(BaseModel):
     flow: FlowModel
+    flow_id: int | None = None
     workdir: str = "."
     user_input: str = ""
 
@@ -111,7 +159,6 @@ async def index():
 
 @app.get("/api/flows")
 async def api_list_flows():
-    """List all saved flows."""
     flows = _storage.list_flows()
     return {
         "flows": [
@@ -130,7 +177,6 @@ async def api_list_flows():
 
 @app.get("/api/flows/{flow_id}")
 async def api_get_flow(flow_id: int):
-    """Load a saved flow by ID."""
     flow = _storage.get_flow(flow_id)
     if not flow:
         raise HTTPException(404, f"Flow not found: {flow_id}")
@@ -146,11 +192,11 @@ async def api_get_flow(flow_id: int):
 
 @app.post("/api/flows/save")
 async def api_save_flow(req: SaveFlowRequest):
-    """Save a flow to SQLite. Creates new if flow_id is None, updates otherwise."""
     definition = {
         "name": req.flow.name,
         "description": req.flow.description,
         "runner": req.flow.runner,
+        "workdir": req.flow.workdir,
         "max_iterations": req.flow.max_iterations,
         "nodes": [n.model_dump() for n in req.flow.nodes],
         "edges": [e.model_dump() for e in req.flow.edges],
@@ -166,14 +212,13 @@ async def api_save_flow(req: SaveFlowRequest):
 
 @app.delete("/api/flows/{flow_id}")
 async def api_delete_flow(flow_id: int):
-    """Delete a saved flow."""
     if not _storage.delete_flow(flow_id):
         raise HTTPException(404, f"Flow not found: {flow_id}")
     return {"status": "deleted"}
 
 
 # ---------------------------------------------------------------------------
-# Flow operations
+# Flow utilities
 # ---------------------------------------------------------------------------
 
 @app.get("/api/node-types")
@@ -188,7 +233,6 @@ async def get_runners():
 
 @app.get("/api/templates")
 async def api_list_templates():
-    """List available flow templates from examples/ directory."""
     examples_dir = Path(__file__).parent.parent.parent / "examples"
     templates = []
     if examples_dir.exists():
@@ -208,8 +252,6 @@ async def api_list_templates():
 
 @app.get("/api/templates/{filename}")
 async def api_get_template(filename: str):
-    """Load a specific template by filename."""
-    # Prevent path traversal
     if "/" in filename or "\\" in filename or ".." in filename:
         raise HTTPException(403, "Invalid filename")
     examples_dir = Path(__file__).parent.parent.parent / "examples"
@@ -220,7 +262,6 @@ async def api_get_template(filename: str):
         data = yaml.safe_load(file_path.read_text(encoding="utf-8"))
     except yaml.YAMLError as e:
         raise HTTPException(500, f"Template parse error: {e}") from None
-
     return _parse_yaml_flow_data(data)
 
 
@@ -233,7 +274,6 @@ async def api_validate(flow: FlowModel):
 
 @app.post("/api/flow/export-yaml")
 async def api_export_yaml(flow: FlowModel):
-    """Export flow as YAML string for sharing."""
     data = _model_to_yaml_dict(flow)
     yaml_str = yaml.dump(data, allow_unicode=True, default_flow_style=False, sort_keys=False)
     return {"yaml": yaml_str}
@@ -245,198 +285,224 @@ class ImportYamlRequest(BaseModel):
 
 @app.post("/api/flow/import-yaml")
 async def api_import_yaml(req: ImportYamlRequest):
-    """Import a flow from YAML content. Returns parsed flow definition."""
     try:
         data = yaml.safe_load(req.yaml_content)
     except yaml.YAMLError as e:
         raise HTTPException(400, f"YAML 解析错误: {e}") from None
-
     if not isinstance(data, dict):
         raise HTTPException(400, "无效的 YAML 格式")
-
     return _parse_yaml_flow_data(data)
 
 
-@app.post("/api/flow/run")
-async def api_run_flow(req: RunRequest):
-    global _current_flow, _flow_task, _flow_events, _event_queue, _interactive_input_queue
+# ---------------------------------------------------------------------------
+# Task API
+# ---------------------------------------------------------------------------
 
-    if _flow_task and not _flow_task.done():
-        raise HTTPException(409, "A flow is already running")
+@app.post("/api/tasks")
+async def api_create_task(req: CreateTaskRequest):
+    """Create and immediately start a new task."""
+    workdir = str(Path(req.workdir or ".").resolve())
 
-    _flow_events = []
-    _event_queue = asyncio.Queue()
-    _interactive_input_queue = asyncio.Queue()
+    # Workdir mutex
+    existing_task_id = _workdir_locks.get(workdir)
+    if existing_task_id and existing_task_id in _task_contexts:
+        ctx = _task_contexts[existing_task_id]
+        if ctx.is_running:
+            raise HTTPException(409, f"工作目录 {workdir} 已有任务在运行 (task: {existing_task_id})")
+
+    task_id = _new_task_id()
+    log_path = str(_task_log_path(task_id))
+
+    # Persist to DB
+    flow_snapshot = {
+        "name": req.flow.name,
+        "description": req.flow.description,
+        "runner": req.flow.runner,
+        "max_iterations": req.flow.max_iterations,
+        "nodes": [n.model_dump() for n in req.flow.nodes],
+        "edges": [e.model_dump() for e in req.flow.edges],
+    }
+    _storage.create_task(
+        task_id=task_id,
+        flow_id=req.flow_id,
+        flow_name=req.flow.name,
+        flow_snapshot=flow_snapshot,
+        workdir=workdir,
+        user_input=req.user_input,
+        log_path=log_path,
+    )
+
+    # Build in-memory context
+    ctx = TaskContext(task_id=task_id, log_path=log_path)
+    _task_contexts[task_id] = ctx
+    _workdir_locks[workdir] = task_id
+
+    # Build flow engine
     definition = _model_to_definition(req.flow)
-    workdir = str(Path(req.workdir).resolve())
-
     runner_config = _load_runner_config()
-    _current_flow = Flow(definition, workdir, runner_config=runner_config)
+    flow_obj = Flow(definition, workdir, runner_config=runner_config)
+    ctx.flow_obj = flow_obj
 
-    def on_event(event: dict):
-        _flow_events.append(event)
-        if _event_queue:
-            _event_queue.put_nowait(event)
+    def on_event(event: dict) -> None:
+        _append_event_log(log_path, event)
+        ctx.event_queue.put_nowait(event)
 
     async def on_interactive_input(node_id: str, assistant_output: str) -> str:
-        """Called by engine when an interactive node needs user input.
-
-        Emits a 'interactive_wait' event so the frontend shows a chat input,
-        then blocks until the user sends a message via WebSocket.
-        """
         on_event({
             "type": "interactive_wait",
             "node_id": node_id,
             "output": assistant_output,
             "timestamp": time.time(),
         })
-        # Block until user sends a message
-        user_msg = await _interactive_input_queue.get()
-        return user_msg
+        return await ctx.interactive_queue.get()
 
-    _current_flow.on_event = on_event
-    _current_flow.on_node_start = lambda nid, ntype: None
-    _current_flow.on_node_complete = lambda nid, result: None
-    _current_flow.on_flow_complete = lambda state: None
-    _current_flow.on_interactive_input = on_interactive_input
+    flow_obj.on_event = on_event
+    flow_obj.on_node_start = lambda nid, ntype: None
+    flow_obj.on_node_complete = lambda nid, result: None
+    flow_obj.on_flow_complete = lambda state: None
+    flow_obj.on_interactive_input = on_interactive_input
 
-    _flow_task = asyncio.create_task(_current_flow.run(req.user_input))
-    return {"status": "started"}
-
-
-@app.get("/api/flow/status")
-async def api_flow_status():
-    if not _flow_task:
-        return {"status": "idle", "events": []}
-
-    status = "running" if not _flow_task.done() else "completed"
-    if _flow_task.done():
+    async def run_task():
         try:
-            _flow_task.result()
-        except Exception:
-            status = "failed"
+            await flow_obj.run(req.user_input)
+            _storage.update_task_status(task_id, "completed")
+        except asyncio.CancelledError:
+            _storage.update_task_status(task_id, "stopped")
+            on_event({"type": "flow_stopped", "timestamp": time.time()})
+        except Exception as e:
+            logger.exception(f"Task {task_id} failed: {e}")
+            _storage.update_task_status(task_id, "failed")
+            on_event({"type": "flow_error", "error": str(e), "timestamp": time.time()})
+        finally:
+            _workdir_locks.pop(workdir, None)
 
-    return {"status": status, "events": _flow_events}
+    ctx.asyncio_task = asyncio.create_task(run_task())
+    return {"task_id": task_id, "status": "started"}
 
 
-@app.get("/api/flow/events")
-async def api_flow_events_sse():
-    """Server-Sent Events endpoint for real-time flow execution events."""
-    async def event_generator():
-        if not _event_queue:
-            yield f"data: {json.dumps({'type': 'error', 'message': 'No flow running'})}\n\n"
-            return
+@app.get("/api/tasks")
+async def api_list_tasks():
+    tasks = _storage.list_tasks()
+    result = []
+    for t in tasks:
+        ctx = _task_contexts.get(t.id)
+        live_status = None
+        if ctx:
+            if ctx.is_running:
+                live_status = "running"
+            elif ctx.asyncio_task and ctx.asyncio_task.done():
+                try:
+                    ctx.asyncio_task.result()
+                    live_status = "completed"
+                except Exception:
+                    live_status = "failed"
+        result.append({
+            "id": t.id,
+            "flow_name": t.flow_name,
+            "flow_id": t.flow_id,
+            "workdir": t.workdir,
+            "user_input": t.user_input,
+            "status": live_status or t.status,
+            "created_at": t.created_at,
+            "updated_at": t.updated_at,
+        })
+    return {"tasks": result}
 
-        # Send already-collected events
-        sent_count = len(_flow_events)
-        for ev in _flow_events:
-            yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
 
-        # Drain queue of events we already sent (they were added to both lists)
-        drained = 0
-        while not _event_queue.empty() and drained < sent_count:
-            try:
-                _event_queue.get_nowait()
-                drained += 1
-            except asyncio.QueueEmpty:
-                break
+@app.get("/api/tasks/{task_id}")
+async def api_get_task(task_id: str):
+    task = _storage.get_task(task_id)
+    if not task:
+        raise HTTPException(404, f"Task not found: {task_id}")
+    ctx = _task_contexts.get(task_id)
+    live_status = None
+    if ctx:
+        live_status = "running" if ctx.is_running else None
+    events = _read_event_log(task.log_path)
+    return {
+        "id": task.id,
+        "flow_name": task.flow_name,
+        "flow_id": task.flow_id,
+        "flow_snapshot": task.flow_snapshot,
+        "workdir": task.workdir,
+        "user_input": task.user_input,
+        "status": live_status or task.status,
+        "created_at": task.created_at,
+        "updated_at": task.updated_at,
+        "events": events,
+    }
 
+
+@app.post("/api/tasks/{task_id}/stop")
+async def api_stop_task(task_id: str):
+    ctx = _task_contexts.get(task_id)
+    if not ctx or not ctx.is_running:
+        return {"status": "not_running"}
+    ctx.asyncio_task.cancel()
+    return {"status": "stopping"}
+
+
+@app.delete("/api/tasks/{task_id}")
+async def api_delete_task(task_id: str):
+    ctx = _task_contexts.get(task_id)
+    if ctx and ctx.is_running:
+        raise HTTPException(409, "任务运行中，请先停止")
+    _task_contexts.pop(task_id, None)
+    if not _storage.delete_task(task_id):
+        raise HTTPException(404, f"Task not found: {task_id}")
+    return {"status": "deleted"}
+
+
+@app.websocket("/ws/task/{task_id}")
+async def ws_task(ws: WebSocket, task_id: str):
+    """Per-task WebSocket: streams events and accepts interactive input."""
+    await ws.accept()
+
+    ctx = _task_contexts.get(task_id)
+    if not ctx:
+        # Task not in memory — send historical events and close
+        task = _storage.get_task(task_id)
+        if task:
+            for ev in _read_event_log(task.log_path):
+                await ws.send_json(ev)
+        await ws.close()
+        return
+
+    # Replay historical events first
+    for ev in _read_event_log(ctx.log_path):
+        await ws.send_json(ev)
+
+    async def send_events():
         while True:
             try:
-                event = await asyncio.wait_for(_event_queue.get(), timeout=30.0)
-                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
-                if event.get("type") == "flow_complete":
+                event = await asyncio.wait_for(ctx.event_queue.get(), timeout=30.0)
+                await ws.send_json(event)
+                if event.get("type") in ("flow_complete", "flow_stopped", "flow_error"):
                     break
             except asyncio.TimeoutError:
-                yield ": keepalive\n\n"
+                await ws.send_json({"type": "keepalive"})
             except Exception:
                 break
 
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
-
-
-@app.websocket("/ws/flow")
-async def ws_flow(ws: WebSocket):
-    """WebSocket endpoint for bidirectional flow communication.
-
-    Server → Client: flow events (same as SSE)
-    Client → Server: interactive node user input (JSON: {"type": "interactive_input", "message": "..."})
-    """
-    global _active_ws
-    await ws.accept()
-    _active_ws = ws
+    async def recv_messages():
+        while True:
+            try:
+                data = await ws.receive_json()
+                if data.get("type") == "interactive_input":
+                    ctx.interactive_queue.put_nowait(data.get("message", ""))
+                elif data.get("type") == "stop" and ctx.is_running:
+                    ctx.asyncio_task.cancel()
+            except (WebSocketDisconnect, Exception):
+                break
 
     try:
-        # Send already-collected events
-        for ev in list(_flow_events):
-            await ws.send_json(ev)
-
-        # Drain queue of events we already sent
-        if _event_queue:
-            drained = 0
-            sent_count = len(_flow_events)
-            while not _event_queue.empty() and drained < sent_count:
-                try:
-                    _event_queue.get_nowait()
-                    drained += 1
-                except asyncio.QueueEmpty:
-                    break
-
-        async def send_events():
-            """Forward engine events to WebSocket."""
-            if not _event_queue:
-                return
-            while True:
-                try:
-                    event = await asyncio.wait_for(_event_queue.get(), timeout=30.0)
-                    await ws.send_json(event)
-                    if event.get("type") in ("flow_complete", "flow_stopped"):
-                        break
-                except asyncio.TimeoutError:
-                    await ws.send_json({"type": "keepalive"})
-                except Exception:
-                    break
-
-        async def recv_messages():
-            """Receive user messages and route to interactive input queue."""
-            while True:
-                try:
-                    data = await ws.receive_json()
-                    if data.get("type") == "interactive_input" and _interactive_input_queue:
-                        _interactive_input_queue.put_nowait(data.get("message", ""))
-                    elif data.get("type") == "stop" and _flow_task and not _flow_task.done():
-                        _flow_task.cancel()
-                        if _event_queue:
-                            _event_queue.put_nowait({"type": "flow_stopped", "timestamp": time.time()})
-                except (WebSocketDisconnect, Exception):
-                    break
-
-        # Run send and receive concurrently
         await asyncio.gather(send_events(), recv_messages(), return_exceptions=True)
-
     except WebSocketDisconnect:
         pass
-    finally:
-        _active_ws = None
-
-
-@app.post("/api/flow/stop")
-async def api_stop_flow():
-    global _flow_task
-    if _flow_task and not _flow_task.done():
-        _flow_task.cancel()
-        if _event_queue:
-            _event_queue.put_nowait({"type": "flow_stopped", "timestamp": time.time()})
-        return {"status": "stopped"}
-    return {"status": "not_running"}
 
 
 # ---------------------------------------------------------------------------
-# Context File Browser API
+# Context File Browser
 # ---------------------------------------------------------------------------
 
 @app.get("/api/context/list")
@@ -444,7 +510,6 @@ async def api_list_context(workdir: str = Query(".")):
     ctx_dir = _validate_workdir(workdir) / ".codyflow" / "context"
     if not ctx_dir.exists():
         return {"files": []}
-
     files = []
     for f in sorted(ctx_dir.iterdir()):
         if f.is_file():
@@ -457,47 +522,12 @@ async def api_list_context(workdir: str = Query(".")):
 async def api_read_context(filename: str, workdir: str = Query(".")):
     ctx_dir = _validate_workdir(workdir) / ".codyflow" / "context"
     file_path = ctx_dir / filename
-
     if not file_path.resolve().is_relative_to(ctx_dir.resolve()):
         raise HTTPException(403, "Access denied")
     if not file_path.exists():
         raise HTTPException(404, f"File not found: {filename}")
-
     content = file_path.read_text(encoding="utf-8")
     return {"name": filename, "content": content, "size": len(content)}
-
-
-@app.get("/api/logs/list")
-async def api_list_logs(workdir: str = Query(".")):
-    logs_dir = _validate_workdir(workdir) / ".codyflow" / "logs"
-    if not logs_dir.exists():
-        return {"files": []}
-
-    files = []
-    for f in sorted(logs_dir.iterdir(), reverse=True):
-        if f.is_file() and f.suffix == ".jsonl":
-            stat = f.stat()
-            files.append({"name": f.name, "size": stat.st_size, "modified": stat.st_mtime})
-    return {"files": files[:20]}
-
-
-@app.get("/api/logs/read")
-async def api_read_log(filename: str, workdir: str = Query(".")):
-    logs_dir = _validate_workdir(workdir) / ".codyflow" / "logs"
-    file_path = logs_dir / filename
-
-    if not file_path.resolve().is_relative_to(logs_dir.resolve()):
-        raise HTTPException(403, "Access denied")
-    if not file_path.exists():
-        raise HTTPException(404, f"File not found: {filename}")
-
-    import contextlib
-    events = []
-    for line in file_path.read_text(encoding="utf-8").splitlines():
-        if line.strip():
-            with contextlib.suppress(json.JSONDecodeError):
-                events.append(json.loads(line))
-    return {"events": events}
 
 
 # ---------------------------------------------------------------------------
@@ -522,45 +552,19 @@ async def api_save_config(config: dict):
 
 @app.get("/api/config/check-env")
 async def api_check_env():
-    results = {}
-
+    results: dict[str, Any] = {}
     v = sys.version
     results["python"] = {"ok": sys.version_info >= (3, 10), "detail": f"Python {v.split()[0]}"}
-
     try:
         import langgraph
         results["langgraph"] = {"ok": True, "detail": f"v{getattr(langgraph, '__version__', '?')}"}
     except ImportError:
         results["langgraph"] = {"ok": False, "detail": "未安装 — pip install langgraph"}
-
-    try:
-        import cody
-        results["cody_sdk"] = {"ok": True, "detail": f"v{getattr(cody, '__version__', '?')}"}
-    except ImportError:
-        results["cody_sdk"] = {"ok": False, "detail": "未安装 — pip install cody-ai"}
-
     try:
         import claude_agent_sdk
         results["claude_code"] = {"ok": True, "detail": f"v{getattr(claude_agent_sdk, '__version__', '?')}"}
     except ImportError:
         results["claude_code"] = {"ok": False, "detail": "未安装 — pip install claude-agent-sdk"}
-
-    import os
-    has_key = bool(os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("CODY_MODEL_API_KEY"))
-    if has_key:
-        results["api_key"] = {"ok": True, "detail": "已配置 (环境变量)"}
-    elif _config_path.exists():
-        try:
-            cfg = json.loads(_config_path.read_text())
-            if cfg.get("cody", {}).get("api_key"):
-                results["api_key"] = {"ok": True, "detail": "已配置 (配置文件)"}
-            else:
-                results["api_key"] = {"ok": False, "detail": "未配置 API Key"}
-        except Exception:
-            results["api_key"] = {"ok": False, "detail": "未配置 API Key"}
-    else:
-        results["api_key"] = {"ok": False, "detail": "未配置 — 在设置页面填写或设置环境变量"}
-
     return results
 
 
@@ -569,12 +573,9 @@ async def api_check_env():
 # ---------------------------------------------------------------------------
 
 def _validate_workdir(workdir: str) -> Path:
-    """Resolve and validate a workdir path. Raises HTTPException on invalid input."""
     resolved = Path(workdir).resolve()
     if not resolved.is_dir():
         raise HTTPException(400, f"工作目录不存在: {resolved}")
-    # Block obvious traversal attempts (e.g. workdir = "/etc" or "/")
-    # Must be at least 2 levels deep to be a plausible project directory
     if len(resolved.parts) < 3:
         raise HTTPException(403, f"工作目录不允许: {resolved}")
     return resolved
@@ -590,22 +591,30 @@ def _load_runner_config() -> dict:
 
 
 def _parse_yaml_flow_data(data: dict) -> dict:
-    """Parse raw YAML data into standardized flow format with UI positions."""
     nodes = []
-    for i, n in enumerate(data.get("nodes", [])):
+    raw_nodes = data.get("nodes", [])
+    # Layout: start at top-center, end at bottom-center, others in between
+    n_total = len(raw_nodes)
+    for i, n in enumerate(raw_nodes):
+        node_type = n.get("type", "custom")
+        if node_type == "start":
+            x, y = 220, 20
+        elif node_type == "end":
+            x, y = 220, 40 + (n_total - 1) * 130
+        else:
+            x, y = 220, 40 + i * 130
         nodes.append({
             "id": n.get("id", f"node_{i}"),
-            "type": n.get("type", "custom"),
+            "type": node_type,
             "prompt": n.get("prompt", ""),
             "outputs": n.get("outputs", []),
             "runner": n.get("runner"),
             "interactive": n.get("interactive", False),
             "error_strategy": n.get("error_strategy", "retry"),
             "max_retries": n.get("max_retries", 3),
-            "x": 220,
-            "y": 40 + i * 120,
+            "x": x,
+            "y": y,
         })
-
     edges = []
     for e in data.get("edges", []):
         edges.append({
@@ -613,11 +622,11 @@ def _parse_yaml_flow_data(data: dict) -> dict:
             "to_node": e.get("to", ""),
             "condition": e.get("condition"),
         })
-
     return {
         "name": data.get("name", "imported"),
         "description": data.get("description", ""),
         "runner": data.get("runner", "cody"),
+        "workdir": data.get("workdir", ""),
         "max_iterations": data.get("max_iterations", 3),
         "nodes": nodes,
         "edges": edges,
@@ -654,6 +663,7 @@ def _model_to_yaml_dict(flow: FlowModel) -> dict:
         "name": flow.name,
         "description": flow.description,
         "runner": flow.runner,
+        "workdir": flow.workdir,
         "max_iterations": flow.max_iterations,
         "nodes": [
             {k: v for k, v in {

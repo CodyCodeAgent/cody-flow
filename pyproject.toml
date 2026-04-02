@@ -41,12 +41,11 @@ dependencies = [
     "langgraph-checkpoint-sqlite>=2.0",
     "fastapi>=0.110",
     "uvicorn>=0.27",
+    "cody-ai>=2.0",
 ]
 
 [project.optional-dependencies]
-cody = ["cody-ai>=2.0"]
 claude = ["claude-agent-sdk>=0.1"]
-all = ["cody-ai>=2.0", "claude-agent-sdk>=0.1"]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
@@ -60,7 +59,7 @@ Issues = "https://github.com/codycodeagent/cody-flow/issues"
 Changelog = "https://github.com/codycodeagent/cody-flow/blob/main/CHANGELOG.md"
 
 [project.scripts]
-codyflow = "codyflow.__main__:main"
+cflow = "codyflow.__main__:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["codyflow"]

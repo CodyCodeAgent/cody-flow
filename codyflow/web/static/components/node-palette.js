@@ -3,34 +3,55 @@
    ============================================================ */
 
 const NodePalette = {
-  emits: ['addNode', 'loadContextFile'],
+  emits: ['addNode', 'loadFlow', 'newFlow', 'deleteFlow'],
   data() {
     return {
-      nodeTypes: ['discuss', 'learn', 'code', 'reflect', 'judge', 'custom'],
-      activeTab: 'nodes', // nodes | context | log
+      nodeTypes: ['start', 'discuss', 'learn', 'code', 'reflect', 'judge', 'custom', 'end'],
+      activeTab: 'nodes',  // nodes | flows
+      NODE_COLORS,
+      NODE_LABELS,
+      NODE_DESCS,
+      store,
+      flows: [],
+      loadingFlows: false,
     };
   },
+
   methods: {
     dragStart(e, type) {
       e.dataTransfer.setData('nodeType', type);
     },
-    formatSize(bytes) {
-      if (bytes < 1024) return bytes + ' B';
-      if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
-      return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+
+    async switchToFlows() {
+      this.activeTab = 'flows';
+      await this.refreshFlows();
     },
+
+    async refreshFlows() {
+      this.loadingFlows = true;
+      try {
+        const data = await API.listFlows();
+        this.flows = data.flows || [];
+      } catch (e) {
+        console.error('loadFlows failed', e);
+      } finally {
+        this.loadingFlows = false;
+      }
+    },
+
     formatTime(ts) {
       if (!ts) return '';
-      return new Date(ts * 1000).toLocaleTimeString();
+      const d = new Date(ts * 1000);
+      return d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     },
   },
+
   template: `
     <div class="sidebar">
       <!-- Tab switcher -->
       <div class="sidebar-tabs">
         <button :class="{active: activeTab==='nodes'}" @click="activeTab='nodes'">节点</button>
-        <button :class="{active: activeTab==='context'}" @click="activeTab='context'">上下文</button>
-        <button :class="{active: activeTab==='log'}" @click="activeTab='log'">日志</button>
+        <button :class="{active: activeTab==='flows'}" @click="switchToFlows()">Flow</button>
       </div>
 
       <!-- Nodes Tab -->
@@ -53,7 +74,7 @@ const NodePalette = {
         </div>
 
         <h3>Flow 配置</h3>
-        <div style="margin-bottom:16px;padding-bottom:16px;border-bottom:1px solid var(--border)">
+        <div style="padding-bottom:16px">
           <div class="form-group">
             <label>名称</label>
             <input v-model="store.flow.name">
@@ -76,45 +97,43 @@ const NodePalette = {
         </div>
       </div>
 
-      <!-- Context Files Tab -->
-      <div v-show="activeTab==='context'">
-        <h3>上下文文件</h3>
-        <p v-if="store.contextFiles.length === 0" style="font-size:11px;color:var(--text2);padding:8px 0">
-          运行 Flow 后，节点产出的上下文文件会显示在这里。
-        </p>
-        <div class="context-list">
-          <div
-            v-for="f in store.contextFiles" :key="f.name"
-            class="context-item"
-            :class="{active: store.selectedContextFile === f.name}"
-            @click="$emit('loadContextFile', f.name)"
-          >
-            <div class="context-name">{{ f.name }}</div>
-            <div class="context-meta">{{ formatSize(f.size) }} · {{ formatTime(f.modified) }}</div>
+      <!-- Flows Tab -->
+      <div v-show="activeTab==='flows'" style="display:flex;flex-direction:column;height:100%">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+          <h3 style="margin:0">已保存的 Flow</h3>
+          <div style="display:flex;gap:4px">
+            <button class="btn btn-outline btn-sm" @click="refreshFlows" title="刷新">↺</button>
+            <button class="btn btn-primary btn-sm" @click="$emit('newFlow')">+ 新建</button>
           </div>
         </div>
-        <div v-if="store.contextFileContent" class="context-preview">
-          <h4>{{ store.selectedContextFile }}</h4>
-          <pre>{{ store.contextFileContent }}</pre>
+
+        <div v-if="loadingFlows" style="color:var(--text2);font-size:12px;padding:8px 0">加载中...</div>
+        <div v-else-if="flows.length === 0" style="color:var(--text2);font-size:12px;padding:12px 0;text-align:center;line-height:1.8">
+          还没有保存的 Flow<br>
+          <span style="font-size:11px">在"节点"tab 设计后点保存</span>
+        </div>
+        <div v-else class="flow-sidebar-list">
+          <div
+            v-for="f in flows" :key="f.id"
+            class="flow-sidebar-item"
+            :class="{active: store.currentFlowId === f.id}"
+            @click="$emit('loadFlow', f.id)"
+          >
+            <div class="flow-sidebar-name">{{ f.name || '未命名' }}</div>
+            <div class="flow-sidebar-meta">
+              {{ f.node_count }} 个节点
+              <span v-if="f.description" style="margin-left:4px;color:var(--text2)">· {{ f.description.slice(0, 20) }}{{ f.description.length > 20 ? '…' : '' }}</span>
+            </div>
+            <div class="flow-sidebar-time">{{ formatTime(f.updated_at) }}</div>
+            <button
+              class="btn btn-danger btn-sm flow-sidebar-del"
+              @click.stop="$emit('deleteFlow', f.id, () => refreshFlows())"
+              title="删除"
+            >✕</button>
+          </div>
         </div>
       </div>
 
-      <!-- Log Tab -->
-      <div v-show="activeTab==='log'">
-        <h3>执行日志</h3>
-        <div class="events-log" ref="log">
-          <div v-if="store.runEvents.length === 0" class="event">等待执行...</div>
-          <div
-            v-for="(ev, i) in store.runEvents" :key="i"
-            class="event"
-            :class="{start: ev.type==='node_start', complete: ev.type==='node_complete', error: ev.type==='error', route: ev.type==='route'}"
-          >
-            <span class="event-time" v-if="ev.time">{{ ev.time }}</span>
-            {{ ev.text }}
-            <div v-if="ev.detail" class="event-detail">{{ ev.detail }}</div>
-          </div>
-        </div>
-      </div>
     </div>
   `,
 };

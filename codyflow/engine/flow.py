@@ -204,6 +204,26 @@ class Flow:
             flow.on_node_start(nid, node_config.type)
         flow.exec_logger.log_node_start(nid, node_config.type, prompt)
 
+        # Passthrough nodes (start, end) skip the runner entirely
+        if not node_cls.requires_runner:
+            result = await node.execute(None, state)
+            duration = time.time() - start_time
+            completed = list(state.get("completed_nodes", []))
+            if nid not in completed:
+                completed.append(nid)
+            flow.exec_logger.log_node_complete(nid, result, duration)
+            flow._emit({
+                "type": "node_complete", "node_id": nid,
+                "node_type": node_config.type,
+                "duration": round(duration, 2),
+                "output_preview": "", "output_length": 0,
+                "output_files": [], "metadata": {},
+                "timestamp": time.time(),
+            })
+            if flow.on_node_complete:
+                flow.on_node_complete(nid, result)
+            return {**state, "completed_nodes": completed, "iteration": iteration}
+
         # Get runner config
         runner_name = node_config.runner or flow.definition.runner
         kwargs = flow._get_runner_kwargs(runner_name)
@@ -218,6 +238,14 @@ class Flow:
         while retries <= node_config.max_retries:
             try:
                 async with get_runner(runner_name, workdir=flow.workdir, **kwargs) as runner:
+                    runner.on_chunk = lambda content, chunk_type, extra=None: flow._emit({
+                        "type": "output_chunk",
+                        "node_id": nid,
+                        "chunk_type": chunk_type,
+                        "content": content,
+                        "extra": extra,
+                        "timestamp": time.time(),
+                    })
                     if interactive:
                         result = await self._run_interactive(
                             node, runner, state, nid, prompt,

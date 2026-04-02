@@ -238,6 +238,32 @@ class CustomNode(SimpleNode):
         return await super().execute(runner, state)
 
 
+class StartNode(Node):
+    """Flow start marker — no AI execution, just marks the entry point."""
+
+    node_type = "start"
+    requires_runner = False
+
+    def build_prompt(self, state: FlowState) -> str:
+        return ""
+
+    async def execute(self, runner, state: FlowState) -> NodeResult:
+        return NodeResult(node_id=self.config.id, output="", metadata={})
+
+
+class EndNode(Node):
+    """Flow end marker — no AI execution, just marks the exit point."""
+
+    node_type = "end"
+    requires_runner = False
+
+    def build_prompt(self, state: FlowState) -> str:
+        return ""
+
+    async def execute(self, runner, state: FlowState) -> NodeResult:
+        return NodeResult(node_id=self.config.id, output="", metadata={})
+
+
 # Register all built-in node types
-for cls in [DiscussNode, LearnNode, CodeNode, ReflectNode, JudgeNode, CustomNode]:
+for cls in [DiscussNode, LearnNode, CodeNode, ReflectNode, JudgeNode, CustomNode, StartNode, EndNode]:
     register_node_type(cls.node_type, cls)

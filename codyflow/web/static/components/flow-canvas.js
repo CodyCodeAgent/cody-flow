@@ -3,8 +3,8 @@
    ============================================================ */
 
 const FlowCanvas = {
-  props: ['nodes', 'edges', 'selectedNode', 'runStatus', 'runningNodes', 'completedNodes', 'scale', 'offsetX', 'offsetY'],
-  emits: ['selectNode', 'updateNodePos', 'addEdge', 'removeEdge', 'editEdge', 'dropNode', 'updateTransform'],
+  props: ['nodes', 'edges', 'selectedNode', 'selectedEdgeIdx', 'runStatus', 'runningNodes', 'completedNodes', 'scale', 'offsetX', 'offsetY'],
+  emits: ['selectNode', 'selectEdge', 'updateNodePos', 'addEdge', 'removeEdge', 'dropNode', 'updateTransform'],
 
   data() {
     return {
@@ -36,12 +36,16 @@ const FlowCanvas = {
         const y2 = toNode.y;
         const midY = (y1 + y2) / 2;
 
+        const selected = this.selectedEdgeIdx === idx;
         return {
           idx,
           d: `M ${x1} ${y1} C ${x1} ${midY}, ${x2} ${midY}, ${x2} ${y2}`,
-          color: edge.condition ? 'var(--yellow)' : '#3a3a5e',
+          color: selected ? 'var(--accent)' : (edge.condition ? 'var(--yellow)' : '#3a3a5e'),
+          width: selected ? 3 : 2,
           dashed: !!edge.condition,
           condition: edge.condition,
+          midX: (x1 + x2) / 2,
+          midY: (y1 + y2) / 2,
           labelX: (x1 + x2) / 2 - 25,
           labelY: midY - 8,
           arrowPoints: `${x2},${y2} ${x2-5},${y2-8} ${x2+5},${y2-8}`,
@@ -55,7 +59,7 @@ const FlowCanvas = {
     getNodeLabel(type) { return NODE_LABELS[type] || type; },
 
     nodeClass(node) {
-      const classes = ['flow-node'];
+      const classes = ['flow-node', `type-${node.type}`];
       if (this.selectedNode === node.id) classes.push('active');
       if (this.runningNodes && this.runningNodes.includes(node.id)) classes.push('running');
       if (this.completedNodes && this.completedNodes.includes(node.id)) classes.push('completed');
@@ -111,6 +115,7 @@ const FlowCanvas = {
     onCanvasClick(e) {
       if (e.target === this.$refs.canvasEl || e.target.closest('.grid-bg')) {
         this.$emit('selectNode', null);
+        this.$emit('selectEdge', null);
       }
     },
 
@@ -159,11 +164,8 @@ const FlowCanvas = {
     },
 
     onEdgeClick(idx) {
-      this.$emit('editEdge', idx);
-    },
-
-    onEdgeDblClick(idx) {
-      this.$emit('removeEdge', idx);
+      this.$emit('selectEdge', idx);
+      this.$emit('selectNode', null);
     },
 
     onDrop(e) {
@@ -190,33 +192,32 @@ const FlowCanvas = {
     >
       <div class="grid-bg"></div>
       <div class="canvas" ref="canvasEl" :style="{transform: canvasTransform, transformOrigin: '0 0'}" @mousedown="onCanvasClick">
-        <svg :style="{transform: canvasTransform, transformOrigin: '0 0'}">
-          <!-- Edges -->
+        <svg style="pointer-events:none">
+          <!-- Edges (visual only) -->
           <g v-for="ep in edgePaths" :key="'e'+ep.idx">
-            <path
-              :d="ep.d" :stroke="ep.color" stroke-width="2" fill="none"
-              :stroke-dasharray="ep.dashed ? '6 3' : 'none'"
-              style="pointer-events:stroke;cursor:pointer"
-              @click.stop="onEdgeClick(ep.idx)"
-              @dblclick.stop="onEdgeDblClick(ep.idx)"
-            />
+            <path :d="ep.d" :stroke="ep.color" :stroke-width="ep.width" fill="none"
+              :stroke-dasharray="ep.dashed ? '6 3' : 'none'"/>
             <polygon :points="ep.arrowPoints" :fill="ep.color"/>
-            <foreignObject
-              v-if="ep.condition"
-              :x="ep.labelX" :y="ep.labelY" width="60" height="18"
-            >
+            <foreignObject v-if="ep.condition" :x="ep.labelX" :y="ep.labelY" width="60" height="18">
               <div xmlns="http://www.w3.org/1999/xhtml"
                 style="background:var(--surface2);border:1px solid var(--border);border-radius:3px;padding:1px 5px;font-size:9px;color:var(--yellow);text-align:center;white-space:nowrap"
               >{{ ep.condition }}</div>
             </foreignObject>
           </g>
-
-          <!-- Connecting line (while dragging) -->
           <path v-if="connectLine"
             :d="'M '+connectLine.x1+' '+connectLine.y1+' L '+connectLine.x2+' '+connectLine.y2"
-            stroke="var(--accent)" stroke-width="2" fill="none" stroke-dasharray="4 4"
-          />
+            stroke="var(--accent)" stroke-width="2" fill="none" stroke-dasharray="4 4"/>
         </svg>
+
+        <!-- Edge midpoint click handles (HTML — 100% reliable click detection) -->
+        <div
+          v-for="ep in edgePaths" :key="'eh'+ep.idx"
+          class="edge-handle"
+          :class="{selected: selectedEdgeIdx === ep.idx}"
+          :style="{left: ep.midX + 'px', top: ep.midY + 'px'}"
+          @click.stop="onEdgeClick(ep.idx)"
+          @mousedown.stop
+        ></div>
 
         <!-- Nodes -->
         <div
@@ -226,7 +227,7 @@ const FlowCanvas = {
           :style="{left: node.x+'px', top: node.y+'px'}"
           @mousedown="onNodeMouseDown($event, node)"
         >
-          <div class="port port-in" @mouseup="endConnect(node.id)"></div>
+          <div class="port port-in" @mouseup="endConnect(node.id)" v-show="node.type !== 'start'"></div>
           <div class="flow-node-header"
             :style="{background: getNodeColor(node.type)+'22', color: getNodeColor(node.type)}"
           >
@@ -236,7 +237,7 @@ const FlowCanvas = {
           <div class="flow-node-body">
             <div class="node-id">{{ node.id }}</div>
           </div>
-          <div class="port port-out" @mousedown="startConnect($event, node.id)"></div>
+          <div class="port port-out" @mousedown="startConnect($event, node.id)" v-show="node.type !== 'end'"></div>
         </div>
       </div>
 
@@ -250,9 +251,7 @@ const FlowCanvas = {
       <div class="canvas-hints" v-show="nodes.length > 0">
         <span>拖拽底部圆点连线</span>
         <span>·</span>
-        <span>单击连线设置条件</span>
-        <span>·</span>
-        <span>双击连线删除</span>
+        <span>单击连线中点编辑/删除</span>
         <span>·</span>
         <span>Ctrl+拖拽平移</span>
         <span>·</span>

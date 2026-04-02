@@ -1,4 +1,4 @@
-"""SQLite storage for flow definitions and run history."""
+"""SQLite storage for flow definitions and tasks."""
 
 from __future__ import annotations
 
@@ -16,13 +16,28 @@ class FlowRecord:
     id: int
     name: str
     description: str
-    definition: dict[str, Any]  # full flow JSON including nodes, edges, UI positions
+    definition: dict[str, Any]
     created_at: float
     updated_at: float
 
 
+@dataclass
+class TaskRecord:
+    """A task instance — a flow run with specific inputs."""
+    id: str
+    flow_id: int | None
+    flow_name: str
+    flow_snapshot: dict[str, Any]  # full flow definition at time of run
+    workdir: str
+    user_input: str
+    status: str   # running | completed | failed | stopped
+    created_at: float
+    updated_at: float
+    log_path: str
+
+
 class FlowStorage:
-    """SQLite-backed storage for flow definitions."""
+    """SQLite-backed storage for flow definitions and tasks."""
 
     def __init__(self, db_path: str | None = None):
         if db_path is None:
@@ -42,6 +57,20 @@ class FlowStorage:
                     definition TEXT NOT NULL,
                     created_at REAL NOT NULL,
                     updated_at REAL NOT NULL
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS tasks (
+                    id TEXT PRIMARY KEY,
+                    flow_id INTEGER,
+                    flow_name TEXT NOT NULL,
+                    flow_snapshot TEXT NOT NULL,
+                    workdir TEXT NOT NULL,
+                    user_input TEXT DEFAULT '',
+                    status TEXT NOT NULL DEFAULT 'running',
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL,
+                    log_path TEXT NOT NULL
                 )
             """)
 
@@ -116,3 +145,70 @@ class FlowStorage:
         with self._conn() as conn:
             cursor = conn.execute("DELETE FROM flows WHERE id = ?", (flow_id,))
             return cursor.rowcount > 0
+
+    # -------------------------------------------------------------------------
+    # Task CRUD
+    # -------------------------------------------------------------------------
+
+    def create_task(
+        self,
+        task_id: str,
+        flow_id: int | None,
+        flow_name: str,
+        flow_snapshot: dict,
+        workdir: str,
+        user_input: str,
+        log_path: str,
+    ) -> TaskRecord:
+        now = time.time()
+        with self._conn() as conn:
+            conn.execute(
+                "INSERT INTO tasks (id, flow_id, flow_name, flow_snapshot, workdir, "
+                "user_input, status, created_at, updated_at, log_path) "
+                "VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?, ?)",
+                (task_id, flow_id, flow_name, json.dumps(flow_snapshot, ensure_ascii=False),
+                 workdir, user_input, now, now, log_path),
+            )
+        return TaskRecord(
+            id=task_id, flow_id=flow_id, flow_name=flow_name,
+            flow_snapshot=flow_snapshot, workdir=workdir, user_input=user_input,
+            status="running", created_at=now, updated_at=now, log_path=log_path,
+        )
+
+    def update_task_status(self, task_id: str, status: str) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE tasks SET status=?, updated_at=? WHERE id=?",
+                (status, time.time(), task_id),
+            )
+
+    def list_tasks(self) -> list[TaskRecord]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT id, flow_id, flow_name, flow_snapshot, workdir, user_input, "
+                "status, created_at, updated_at, log_path FROM tasks ORDER BY created_at DESC"
+            ).fetchall()
+        return [self._row_to_task(r) for r in rows]
+
+    def get_task(self, task_id: str) -> TaskRecord | None:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT id, flow_id, flow_name, flow_snapshot, workdir, user_input, "
+                "status, created_at, updated_at, log_path FROM tasks WHERE id=?",
+                (task_id,),
+            ).fetchone()
+        return self._row_to_task(row) if row else None
+
+    def delete_task(self, task_id: str) -> bool:
+        with self._conn() as conn:
+            cursor = conn.execute("DELETE FROM tasks WHERE id=?", (task_id,))
+            return cursor.rowcount > 0
+
+    @staticmethod
+    def _row_to_task(row) -> TaskRecord:
+        return TaskRecord(
+            id=row[0], flow_id=row[1], flow_name=row[2],
+            flow_snapshot=json.loads(row[3]),
+            workdir=row[4], user_input=row[5], status=row[6],
+            created_at=row[7], updated_at=row[8], log_path=row[9],
+        )

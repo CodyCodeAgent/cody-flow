@@ -25,6 +25,7 @@ class Runner(abc.ABC):
     def __init__(self, workdir: str, **kwargs):
         self.workdir = workdir
         self.config = kwargs
+        self.on_chunk = None  # Optional: (content, chunk_type, extra) -> None
 
     @abc.abstractmethod
     async def run(self, prompt: str, session_id: str | None = None) -> RunnerResult:

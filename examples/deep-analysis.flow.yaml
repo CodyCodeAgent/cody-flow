@@ -4,6 +4,9 @@ runner: claude
 max_iterations: 5
 
 nodes:
+  - id: start
+    type: start
+
   - id: discuss
     type: discuss
     interactive: true
@@ -62,7 +65,12 @@ nodes:
     outputs:
       - judge_output.md
 
+  - id: end
+    type: end
+
 edges:
+  - from: start
+    to: discuss
   - from: discuss
     to: learn
   - from: learn
@@ -79,5 +87,5 @@ edges:
     to: code
     condition: needs_fix
   - from: judge
-    to: END
+    to: end
     condition: passed

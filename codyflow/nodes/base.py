@@ -79,6 +79,7 @@ class Node(abc.ABC):
 
     node_type: str = ""
     default_prompt: str = ""
+    requires_runner: bool = True  # Set False for passthrough nodes (start, end)
 
     def __init__(self, config: NodeConfig):
         self.config = config
